@@ -1,9 +1,9 @@
-//! Standard Base64 (RFC 4648 §4) with lens.py's decoding rules:
-//! `"".join(block.split())` then `b64decode(validate=True)`. Padding is
+//! Standard Base64 (RFC 4648 §4). Spec §3.3: "Line breaks within the Base64
+//! block MUST be ignored"; RFC 4648 §3.3 requires rejecting every other
+//! character outside the alphabet unless the referring spec says otherwise,
+//! so only CR and LF are skipped (docs/INTERPRETATIONS.md, I-3). Padding is
 //! required (ERRATA E7); non-zero unused trailing bits are accepted, as
 //! CPython does.
-
-use crate::pyfmt::is_py_space;
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -14,7 +14,7 @@ fn sextet(c: u8) -> Option<u32> {
 /// Decode a payload block. None if it is not strict, padded standard Base64.
 pub fn decode_block(block: &str) -> Option<Vec<u8>> {
     let mut clean = Vec::with_capacity(block.len());
-    for c in block.chars().filter(|c| !is_py_space(*c)) {
+    for c in block.chars().filter(|c| !matches!(c, '\r' | '\n')) {
         clean.push(u8::try_from(c).ok().filter(u8::is_ascii)?);
     }
     if clean.len() % 4 != 0 {
@@ -61,12 +61,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_follows_cpython_validate_true() {
+    fn decode_ignores_only_line_breaks() {
         assert_eq!(decode_block("QQ=="), Some(b"A".to_vec()));
         assert_eq!(decode_block("QR=="), Some(b"A".to_vec())); // trailing bits accepted
         assert_eq!(decode_block(""), Some(vec![]));
-        assert_eq!(decode_block(" Q\tQ\u{a0}=\u{1c}=\n"), Some(b"A".to_vec()));
-        for bad in ["QQ=", "QQ", "QQ==QQ==", "=QQ=", "Q===", "QQ-_", "QQ\u{200b}=="] {
+        assert_eq!(decode_block("Q\r\nQ\n=\r="), Some(b"A".to_vec()));
+        for bad in [
+            "QQ=",
+            "QQ",
+            "QQ==QQ==",
+            "=QQ=",
+            "Q===",
+            "QQ-_",
+            "QQ\u{200b}==",
+            " QQ==",
+            "Q\tQ==",
+            "QQ\u{a0}==",
+            "QQ\u{1c}==",
+        ] {
             assert_eq!(decode_block(bad), None, "{bad:?}");
         }
     }

@@ -28,11 +28,11 @@ const CANONICAL_VOCAB: &[(&str, &[&str])] = &[
     ("identity_status", &["declared", "signed"]),
 ];
 
-/// lens.py HEX64 = `^[0-9a-f]{64}$` via re.match: Python's `$` also matches
-/// before one trailing "\n", so a hash followed by a newline passes.
+/// Spec §4.1/§4.3: "exactly 64 lowercase hexadecimal characters". Spec text
+/// over reference (see docs/INTERPRETATIONS.md, I-2): lens.py's `$` also
+/// accepts a trailing "\n"; the spec's "exactly" does not.
 fn hex64(v: &Value) -> bool {
     let Value::Str(s) = v else { return false };
-    let s = s.strip_suffix('\n').unwrap_or(s);
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
@@ -62,28 +62,12 @@ fn is_real_iso_date(s: &str) -> bool {
     y >= 1 && (1..=days).contains(&d)
 }
 
-/// lens.py ISO_DATE = `^\d{4}-\d{2}-\d{2}$`: `\d` is any Unicode decimal
-/// digit and `$` allows one trailing "\n". Only the shape matters here; a
-/// shape match that is not a real ASCII date still errors (differently worded).
+/// Spec §4.1 "ISO 8601 date (YYYY-MM-DD)": ten ASCII characters in that shape.
+/// Every shape failure and every impossible date is an error either way; the
+/// shape only decides which of the two messages is used.
 fn iso_date_shape(s: &str) -> bool {
-    let s = s.strip_suffix('\n').unwrap_or(s);
-    let c: Vec<char> = s.chars().collect();
-    c.len() == 10
-        && c[4] == '-'
-        && c[7] == '-'
-        && c.iter().enumerate().all(|(i, ch)| i == 4 || i == 7 || ch.is_ascii_digit() || is_unicode_decimal(*ch))
-}
-
-/// Unicode Nd (decimal digit) for the common non-ASCII digit blocks; Python
-/// `\d` matches these. Used only to pick the error message.
-fn is_unicode_decimal(c: char) -> bool {
-    let o = c as u32;
-    [
-        0x660, 0x6F0, 0x7C0, 0x966, 0x9E6, 0xA66, 0xAE6, 0xB66, 0xBE6, 0xC66, 0xCE6, 0xD66, 0xE50, 0xED0, 0xF20,
-        0x1040, 0xFF10,
-    ]
-    .iter()
-    .any(|&z| (z..z + 10).contains(&o))
+    let b = s.as_bytes();
+    b.len() == 10 && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
 }
 
 /// Paths of bare numeric values (spec §5 violations), in payload order.
@@ -132,18 +116,25 @@ pub fn check(payload: &Value, missing: &[String], fm: &Frontmatter, block_count:
     }
 }
 
-/// Frontmatter must exist; a spec_version that disagrees with the payload is a warning.
+/// Frontmatter must exist and declare spec_version (§3.1 "At minimum,
+/// spec_version MUST appear in the frontmatter"; §10). lens.py checks only
+/// that it exists (docs/INTERPRETATIONS.md, I-1). A declared value that
+/// disagrees with the payload is a warning (ERRATA E5).
 fn check_frontmatter(payload: &Value, fm: &Frontmatter, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     if !fm.ok {
         errors.push(format!("YAML frontmatter missing or malformed: {}", fm.reason));
-    } else if let (Some(fs), Some(Value::Str(ps))) = (&fm.spec, payload.get("spec_version")) {
-        if fs != ps {
+        return;
+    }
+    match (fm.spec.as_deref(), payload.get("spec_version")) {
+        (None | Some(""), _) => errors.push("YAML frontmatter does not declare spec_version (spec §3.1)".into()),
+        (Some(fs), Some(Value::Str(ps))) if fs != ps => {
             warnings.push(format!(
                 "frontmatter spec_version {} does not match sealed payload spec_version {}",
                 repr_str(fs),
                 repr_str(ps)
             ));
         }
+        _ => {}
     }
 }
 
@@ -234,22 +225,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hex64_follows_python_dollar() {
+    fn hex64_is_exactly_64_lowercase_hex() {
         let h = "a".repeat(64);
         assert!(hex64(&Value::Str(h.clone())));
-        assert!(hex64(&Value::Str(format!("{h}\n"))));
-        assert!(!hex64(&Value::Str(format!("{h}\n\n"))));
+        assert!(!hex64(&Value::Str(format!("{h}\n"))));
         assert!(!hex64(&Value::Str("A".repeat(64))));
+        assert!(!hex64(&Value::Str("a".repeat(63))));
     }
 
     #[test]
-    fn dates_follow_fromisoformat() {
+    fn dates_are_ascii_and_real() {
         assert!(is_real_iso_date("2024-02-29"));
         assert!(!is_real_iso_date("2026-02-29"));
         assert!(!is_real_iso_date("0000-01-01"));
         assert!(!is_real_iso_date("2026-13-01"));
-        assert!(iso_date_shape("٢٠٢٦-01-01"));
-        assert!(iso_date_shape("2026-01-01\n"));
+        assert!(iso_date_shape("2026-02-30")); // right shape, impossible date
+        assert!(!iso_date_shape("٢٠٢٦-01-01"));
+        assert!(!iso_date_shape("2026-01-01\n"));
         assert!(!iso_date_shape("2026-1-01"));
     }
 }

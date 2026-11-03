@@ -389,18 +389,23 @@ fn spec_version_line(line: &str) -> Option<String> {
     Some(py_strip(group).trim_matches(['"', '\'']).to_string())
 }
 
-/// lens.py `_find_body_start`: offset just after the closing '---' line, or
-/// None if `pre` does not open with a '---' line (a BOM is NOT skipped here).
+/// Spec §6: the body is "the text immediately following the second line
+/// containing exactly ---", and a verifier that cannot find two such lines
+/// before the BEGIN marker MUST report unreadable. Lines are counted from the
+/// start of the file; lens.py instead requires the very first line to be one
+/// of them (docs/INTERPRETATIONS.md, I-4). Trailing CRs are line-ending
+/// residue, as in lens.py. A line with a BOM or other prefix does not count.
 fn find_body_start(pre: &str) -> Option<usize> {
-    if !(pre.starts_with("---\n") || pre.starts_with("---\r\n")) {
-        return None;
-    }
-    let mut idx = pre.find('\n')? + 1;
+    let mut seen = 0;
+    let mut idx = 0;
     loop {
         let nl = pre[idx..].find('\n').map(|r| idx + r);
         let line = &pre[idx..nl.unwrap_or(pre.len())];
         if line.trim_end_matches('\r') == "---" {
-            return Some(nl.map_or(pre.len(), |n| n + 1));
+            seen += 1;
+            if seen == 2 {
+                return Some(nl.map_or(pre.len(), |n| n + 1));
+            }
         }
         idx = nl? + 1;
     }
@@ -471,5 +476,8 @@ mod tests {
         assert_eq!(find_body_start("---\na: '---x'\n---\nbody"), Some(18));
         assert_eq!(find_body_start("\u{feff}---\n---\n"), None);
         assert_eq!(find_body_start("---\nno close"), None);
+        // §6 counts '---' lines from the start; the first need not be line 1.
+        assert_eq!(find_body_start("\n---\nt: x\n---\nbody"), Some(14));
+        assert_eq!(find_body_start("---\r\nt: x\r\n---\r\nbody"), Some(16));
     }
 }

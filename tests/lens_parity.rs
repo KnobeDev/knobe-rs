@@ -10,6 +10,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use knobe::Value;
+
 #[test]
 fn published_corpus_matches_lens_py() {
     let mut diffs = Vec::new();
@@ -372,8 +374,28 @@ fn flip_trailing_bits(b: &str) -> String {
     chars.into_iter().collect()
 }
 
+/// Cases where knobe-rs follows explicit spec text and lens.py does not (see
+/// docs/INTERPRETATIONS.md): (case, rule, state, body_verified, conformance).
+/// Each must differ from lens.py; if lens.py starts agreeing (an upstream fix
+/// landed), the test fails so the entry can be removed.
+const SPEC_OVER_REFERENCE: &[(&str, &str, &str, Option<&str>, &str)] = &[
+    ("payload-hash-trailing-newline", "I-2", "failed", Some("omitted"), "invalid"),
+    ("body-hash-trailing-newline", "I-2", "verified-body-modified", Some("modified"), "invalid"),
+    ("parent-hash-trailing-newline", "I-2", "verified", Some("omitted"), "invalid"),
+    ("fm-crlf-with-body", "I-1", "verified", Some("yes"), "invalid"),
+    ("fm-double-cr", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-double-cr-with-body", "I-1, I-4", "verified", Some("yes"), "invalid"),
+    ("fm-bom", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-whitespace-only", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-empty", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-after-close-ignored", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-not-prefix", "I-1", "verified", Some("omitted"), "invalid"),
+    ("block-internal-spaces-tabs", "I-3", "unreadable", None, "invalid"),
+    ("block-internal-unicode-space", "I-3", "unreadable", None, "invalid"),
+];
+
 #[test]
-fn hostile_battery_matches_lens_py() {
+fn hostile_battery_matches_lens_py_except_documented_spec_cases() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hostile");
     std::fs::create_dir_all(&dir).unwrap();
     let mut diffs = Vec::new();
@@ -386,9 +408,20 @@ fn hostile_battery_matches_lens_py() {
             continue;
         };
         let rs = common::rust(&path);
-        if py != rs {
-            diffs.push(format!("{name}\n  lens: {py:?}\n  rust: {rs:?}"));
+        match SPEC_OVER_REFERENCE.iter().find(|c| c.0 == *name) {
+            Some((_, rule, state, body, conformance)) => {
+                let want = (Value::Str((*state).into()), body.map_or(Value::Null, |b| Value::Str(b.into())));
+                let want_conf = Value::Str((*conformance).into());
+                if (rs.state.clone(), rs.body_verified.clone()) != want || rs.conformance != want_conf {
+                    diffs.push(format!("{name} ({rule}): rust {rs:?} is not the spec result"));
+                } else if py == rs {
+                    diffs.push(format!("{name} ({rule}): lens.py now agrees; remove it from SPEC_OVER_REFERENCE"));
+                }
+            }
+            None if py != rs => diffs.push(format!("{name}\n  lens: {py:?}\n  rust: {rs:?}")),
+            None => {}
         }
     }
+    assert_eq!(cases.len(), 113, "update the README if the battery size changes");
     assert!(diffs.is_empty(), "{} of {} hostile cases disagree:\n{}", diffs.len(), cases.len(), diffs.join("\n"));
 }
