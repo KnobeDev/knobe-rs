@@ -1,0 +1,20 @@
+[package]
+name = "knobe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "KNOBE Protocol v1 verifier and sealer: a Rust sibling of lens.py and knobe-core.js"
+license = "Apache-2.0"
+keywords = ["knobe", "provenance", "integrity", "sha256"]
+
+[lib]
+name = "knobe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "knobe"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "0.10"
+unicode-normalization = "0.1.26"

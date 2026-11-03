@@ -1,0 +1,8 @@
+knobe-rs
+Licensed under the Apache License, Version 2.0.
+
+This is an independent Rust implementation of KNOBE Protocol v1. Its behavior
+follows the reference verifier lens.py and the sibling engine knobe-core.js
+from https://github.com/KnobeOne/knobe-protocol (Apache-2.0, David Kyle,
+UC Davis). No upstream source code is included. The test suite reads the
+upstream test vectors (CC0-1.0) from a separate checkout at test time.

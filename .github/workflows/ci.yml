@@ -1,0 +1,39 @@
+# Parity gate: runs the full test suite against the CURRENT upstream protocol
+# (main), so any upstream change that breaks lens.py / createKnobe parity
+# fails here immediately. A weekly run catches upstream changes between pushes.
+name: parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: KnobeOne/knobe-protocol
+          path: knobe-protocol
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+        env:
+          KNOBE_PROTOCOL_DIR: ${{ github.workspace }}/knobe-protocol
