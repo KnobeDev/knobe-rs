@@ -6,6 +6,8 @@ rust-version = "1.85"
 description = "KNOBE Protocol v1 verifier and sealer: a Rust sibling of lens.py and knobe-core.js"
 license = "Apache-2.0"
 keywords = ["knobe", "provenance", "integrity", "sha256"]
+repository = "https://github.com/KnobeDev/knobe-rs"
+categories = ["command-line-utilities", "parser-implementations"]
 
 [lib]
 name = "knobe"
