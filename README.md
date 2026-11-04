@@ -2,6 +2,8 @@
 
 A conformant **KNOBE Protocol v1** verifier, plus a sealer, written in Rust and maintained by KnobeDev. It reproduces every published test vector of [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol): the nine conformance vectors, the ten adversarial vectors and the six interpretation vectors.
 
+It is published on crates.io as [`knobe`](https://crates.io/crates/knobe), with API documentation on [docs.rs](https://docs.rs/knobe).
+
 | Upstream | What this crate matches |
 |---|---|
 | `lens.py`, the reference verifier | `state`, `conformance`, `body_verified`, computed and stored hash, block count and exit code, on every published file. On four points it follows the explicit spec text where `lens.py` does not ([below](#where-it-follows-the-spec-text-over-lenspy)). |
@@ -9,18 +11,24 @@ A conformant **KNOBE Protocol v1** verifier, plus a sealer, written in Rust and 
 
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
 
+## Install
+
+```bash
+cargo install knobe
+```
+
+This installs the `knobe` command. It needs Rust 1.85 or later.
+
+To build from a clone of this repository instead, run `cargo build --release`. The command is then `./target/release/knobe`.
+
 ## Use
 
 ```bash
-cargo build --release
+knobe verify --json path/to/file.knobe.md
 ```
 
 ```bash
-./target/release/knobe verify --json path/to/file.knobe.md
-```
-
-```bash
-./target/release/knobe seal --fields fields.json --body body.md --author "Ada" -o out.knobe.md
+knobe seal --fields fields.json --body body.md --author "Ada" -o out.knobe.md
 ```
 
 `verify` prints the same report as `python3 lens.py` and uses the same exit codes:
@@ -33,7 +41,23 @@ cargo build --release
 
 `seal` takes payload fields as a JSON object. Any missing field gets `createKnobe`'s default. The sealer verifies the finished file itself before writing it.
 
-As a library: `knobe::verify_bytes`, `knobe::verify_path`, `knobe::create_knobe`, `knobe::seal`.
+### As a library
+
+```bash
+cargo add knobe
+```
+
+```rust
+use std::path::Path;
+
+let report = knobe::verify_path(Path::new("file.knobe.md"));
+println!("{} / {}", report.state.as_str(), report.conformance.as_str());
+for issue in &report.conformance_issues {
+    println!("{issue}");
+}
+```
+
+The crate exports `verify_bytes`, `verify_path`, `create_knobe` and `seal`. The full API is on [docs.rs](https://docs.rs/knobe).
 
 ## Scope and limits
 
