@@ -1,6 +1,6 @@
 //! Shared helpers for integration tests: locating the pinned protocol checkout
-//! and running the reference verifier (lens.py) and sibling engine
-//! (knobe-core.js) for differential comparison.
+//! and running the reference verifier (lens.py), the sibling engine
+//! (knobe-core.js) and the `knobe` command for differential comparison.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -92,4 +92,82 @@ pub fn lens(file: &Path) -> Option<Gate> {
 pub fn rust(file: &Path) -> Gate {
     let r = knobe::verify_path(file);
     gate_from_json(&r.to_json(), r.exit_code())
+}
+
+/// Stdout and exit code of a finished command.
+fn stdout_and_code(cmd: &mut Command) -> (Vec<u8>, i32) {
+    let out = cmd.output().unwrap_or_else(|e| panic!("cannot run {cmd:?}: {e}"));
+    (out.stdout, out.status.code().unwrap_or(-1))
+}
+
+/// `python3 lens.py [args] FILE`: stdout and exit code, byte for byte.
+pub fn lens_cli(args: &[&str], file: &Path) -> (Vec<u8>, i32) {
+    stdout_and_code(Command::new("python3").arg(protocol_dir().join("lens.py")).args(args).arg(file))
+}
+
+/// `knobe verify [args] FILE`, run as the built command: stdout and exit code.
+pub fn knobe_cli(args: &[&str], file: &Path) -> (Vec<u8>, i32) {
+    stdout_and_code(Command::new(env!("CARGO_BIN_EXE_knobe")).arg("verify").args(args).arg(file))
+}
+
+/// Whether the lens.py under test has the display fixes proposed upstream in
+/// the patch series 3-display-escaping: safe() escapes bidi controls and
+/// unpaired surrogates, and paths, issues and stored_hash go through it.
+/// Until upstream merges them, the cases in PENDING_UPSTREAM may differ.
+pub fn lens_has_display_patch() -> bool {
+    static PATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PATCHED.get_or_init(|| {
+        let check = "import sys; sys.path.insert(0, sys.argv[1]); import lens; \
+                     print(lens.safe('\\u202e\\ud800') == '\\\\u202e\\\\ud800')";
+        let out = Command::new("python3")
+            .args(["-B", "-c", check])
+            .arg(protocol_dir())
+            .output()
+            .expect("python3 must be installed to run parity tests");
+        assert!(out.status.success(), "cannot load lens.py: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim() == "True"
+    })
+}
+
+/// python3's "major.minor".
+pub fn python_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        let out = Command::new("python3")
+            .args(["-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
+            .output()
+            .expect("python3 must be installed to run parity tests");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    })
+}
+
+/// Hostile cases whose lens.py report depends on CPython 3.13's json.loads
+/// recursion limits (3.12 stops one level earlier). CI runs Python 3.13;
+/// elsewhere these cases are skipped, with a note.
+const CPYTHON_313_ONLY: &[&str] = &[
+    "deep-nesting-9997",
+    "deep-nesting-9997-scalar-leaf",
+    "deep-nesting-9998",
+    "deep-nesting-9998-then-dup-key",
+    "top-level-list-9998",
+    "top-level-list-9999",
+    "deep-object-9995",
+    "deep-object-9996",
+    "deep-object-dup-key-9994",
+    "deep-object-dup-key-9995",
+    "deep-object-dup-key-9996",
+    "deep-float-9995",
+    "deep-float-9996",
+    "deep-nan-9995",
+    "deep-nan-9996",
+    "deep-int-9998",
+];
+
+/// Whether to skip `name` on this python3 (printing why).
+pub fn skip_on_this_python(name: &str) -> bool {
+    let skip = CPYTHON_313_ONLY.contains(&name) && python_version() != "3.13";
+    if skip {
+        eprintln!("{name}: skipped, its limit is CPython 3.13's and python3 is {}", python_version());
+    }
+    skip
 }

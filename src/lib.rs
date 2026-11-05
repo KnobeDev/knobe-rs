@@ -13,6 +13,7 @@ pub mod verify;
 
 mod b64;
 mod conformance;
+mod pyprintable;
 
 pub use json::Value;
 pub use seal::{CreateOptions, Created, SealError, create_knobe, seal};

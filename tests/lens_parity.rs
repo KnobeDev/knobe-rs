@@ -1,8 +1,9 @@
-//! Differential parity with the reference verifier: for every published file
-//! and for a battery of crafted hostile files, the Rust verifier must report
+//! Differential parity with the reference verifier, on every published file
+//! and on a battery of crafted hostile files. The Rust verifier must report
 //! exactly what `python3 lens.py --json` reports on the fields the upstream
 //! parity gate compares (state, conformance, body_verified, computed, stored,
-//! block_count, multiple_blocks, exit code).
+//! block_count, multiple_blocks, exit code), and the `knobe` command must
+//! print the same complete `--json` output, byte for byte.
 
 mod common;
 
@@ -195,12 +196,57 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
         ("spec-version-null", knobe(FM, "", &obj_without("spec_version", r#""spec_version":null"#))),
         ("spec-version-padded", knobe(FM, "", &obj_without("spec_version", r#""spec_version":"1.0 ""#))),
         ("spec-version-missing", knobe(FM, "", &obj_without("spec_version", ""))),
+        // A non-string spec_version is shown as Python str() shows it, cut at 300 characters.
+        ("spec-version-list", knobe(FM, "", &obj_without("spec_version", r#""spec_version":["1.0"]"#))),
+        ("spec-version-object", knobe(FM, "", &obj_without("spec_version", r#""spec_version":{"v":"1.0"}"#))),
+        ("spec-version-bool", knobe(FM, "", &obj_without("spec_version", r#""spec_version":true"#))),
+        (
+            "spec-version-long-list",
+            knobe(
+                FM,
+                "",
+                &obj_without("spec_version", &format!(r#""spec_version":[{}"1.0"]"#, r#""xxxxxxxx","#.repeat(40))),
+            ),
+        ),
         // --- vocabulary ---
         ("vocab-custom-bare", knobe(FM, "", &obj_without("content_type", r#""content_type":"custom""#))),
         ("vocab-ext-prefix", knobe(FM, "", &obj_without("content_type", r#""content_type":"ext-custom""#))),
         ("vocab-namespaced", knobe(FM, "", &obj_without("privacy_level", r#""privacy_level":"acme:secret""#))),
         ("vocab-identity-status", knobe(FM, "", &obj(r#""identity_status":"vibes""#))),
         ("vocab-non-string", knobe(FM, "", &obj(r#""identity_status":["signed"]"#))),
+        // --- display: what safe() escapes, and where lens.py applies it ---
+        ("dup-key-ansi", knobe(FM, "", r#"{"\u001b[31mRED":"1","\u001b[31mRED":"2"}"#)),
+        ("dup-key-c1", knobe(FM, "", r#"{"\u0085x":"1","\u0085x":"2"}"#)),
+        ("dup-key-bidi", knobe(FM, "", r#"{"a\u202eb":"1","a\u202eb":"2"}"#)),
+        ("dup-key-line-separator", knobe(FM, "", r#"{"a\u2028b\u2066":"1","a\u2028b\u2066":"2"}"#)),
+        ("dup-key-joiners-kept", knobe(FM, "", r#"{"\u200d\u202f\ufeff\u00ad":"1","\u200d\u202f\ufeff\u00ad":"2"}"#)),
+        ("dup-key-surrogate", knobe(FM, "", r#"{"\ud800":"1","\ud800":"2"}"#)),
+        ("dup-key-surrogate-in-text", knobe(FM, "", r#"{"x\u001b\udfffy":"1","x\u001b\udfffy":"2"}"#)),
+        ("dup-key-surrogate-nested", knobe(FM, "", r#"{"a":{"\udc00":1,"\udc00":2}}"#)),
+        ("dup-key-long", knobe(FM, "", &format!(r#"{{"{k}\u202e":"1","{k}\u202e":"2"}}"#, k = "k".repeat(297)))),
+        ("stored-ansi", knobe(FM, "", &obj("").replace("\"__H__\"", r#""\u001b[31mDEADBEEF\u001b[0m""#))),
+        ("stored-c1", knobe(FM, "", &obj("").replace("\"__H__\"", r#""\u009b31m""#))),
+        ("stored-bidi", knobe(FM, "", &obj("").replace("\"__H__\"", &format!(r#""\u202e{hex}""#)))),
+        ("stored-long-string", knobe(FM, "", &obj("").replace("\"__H__\"", &format!(r#""{}""#, "b".repeat(400))))),
+        ("stored-list", knobe(FM, "", &obj("").replace("\"__H__\"", r#"["a",1]"#))),
+        (
+            "stored-long-list",
+            knobe(FM, "", &obj("").replace("\"__H__\"", &format!("[{}0]", r#""xxxxxxxx","#.repeat(40)))),
+        ),
+        ("stored-object", knobe(FM, "", &obj("").replace("\"__H__\"", r#"{"k":"\u001b"}"#))),
+        ("title-bidi", knobe(FM, "", &obj_without("title", r#""title":"a\u202eb\u2029""#))),
+        ("privacy-level-bidi", knobe(FM, "", &obj_without("privacy_level", r#""privacy_level":"a\u2067b""#))),
+        ("spec-version-bidi", knobe(FM, "", &obj_without("spec_version", r#""spec_version":"1.0\u202e""#))),
+        ("numeric-key-escape", knobe(FM, "", &obj(r#""\u001b[2J\u202e":5"#))),
+        // The human report shows these fields as str(), cut at 300 characters.
+        (
+            "privacy-level-long-list",
+            knobe(
+                FM,
+                "",
+                &obj_without("privacy_level", &format!(r#""privacy_level":[{}"x"]"#, r#""yyyyyyyy","#.repeat(40))),
+            ),
+        ),
         // --- numbers: hash must still match (ERRATA E1), conformance invalid ---
         ("numbers-ints", knobe(FM, "", &obj(r#""x":[0,-0,7,-12,123456789012345678901234567890]"#))),
         (
@@ -221,11 +267,40 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
         ("payload-hash-overflow", knobe(FM, "", &obj("").replace("\"__H__\"", "1e400"))),
         ("payload-hash-overflow-negative", knobe(FM, "", &obj("").replace("\"__H__\"", "-1.5E+999"))),
         ("payload-hash-overflow-in-list", knobe(FM, "", &obj("").replace("\"__H__\"", "[1e400]"))),
+        // --- Python reports a duplicate key only when its object closes
+        // (object_pairs_hook), so a later error in the same object wins ---
+        ("dup-key-then-overflow", knobe(FM, "", &obj(r#""ext":{"a":"1","a":1e400}"#))),
+        ("dup-key-then-nan", knobe(FM, "", &obj(r#""ext":{"a":"1","a":NaN}"#))),
+        ("dup-key-then-syntax-error", knobe(FM, "", r#"{"a":"1","a":"2",}"#)),
+        ("dup-key-inner-closes-first", knobe(FM, "", &obj(r#""a":{"b":"1","b":"2"},"a":"3""#))),
+        // --- Python's int() refuses more than 4300 digits; the sign does not count ---
+        ("int-4300-digits", knobe(FM, "", &obj(&format!(r#""x":-{}"#, "9".repeat(4300))))),
+        ("int-4301-digits", knobe(FM, "", &obj(&format!(r#""x":{}"#, "9".repeat(4301))))),
         // --- JSON strictness ---
         ("dup-key-nested", knobe(FM, "", &obj(r#""ext":{"a":"1","a":"2"}"#))),
         ("nan-constant", knobe(FM, "", &obj(r#""x":NaN"#))),
         ("infinity-constant", knobe(FM, "", &obj(r#""x":-Infinity"#))),
         ("lone-surrogate-value", knobe(FM, "", &obj(r#""x":"\ud800""#))),
+        // The lone-surrogate walk runs once the payload has parsed and proved
+        // to be an object, before the NFC and spec_version checks.
+        ("lone-surrogate-key", knobe(FM, "", &obj(r#""\udc00":"v""#))),
+        ("lone-surrogate-in-payload-hash", knobe(FM, "", &obj("").replace("\"__H__\"", r#""\ud800""#))),
+        (
+            "lone-surrogate-and-bad-spec-version",
+            knobe(FM, "", &obj_without("spec_version", r#""spec_version":"2.0","a":"\ud800""#)),
+        ),
+        (
+            "lone-surrogate-and-nfc-collision",
+            knobe(FM, "", &obj("\"caf\u{e9}\":\"1\",\"cafe\u{301}\":\"2\",\"a\":\"\\ud800\"")),
+        ),
+        ("lone-surrogate-then-dup-key", knobe(FM, "", &obj(r#""x":"\ud800","x":"2""#))),
+        // Distinct unpaired surrogates, or one and a real U+FFFD, are distinct keys.
+        ("lone-surrogate-keys-distinct", knobe(FM, "", &obj(r#""\ud800":"1","\udc00":"2""#))),
+        ("lone-surrogate-key-and-replacement-char", knobe(FM, "", &obj(r#""\ud800":"1","\ufffd":"2""#))),
+        ("lone-surrogate-then-syntax-error", knobe(FM, "", r#"{"x":"\ud800",}"#)),
+        ("lone-high-surrogate-then-pair", knobe(FM, "", &obj(r#""x":"\ud800\ud83d\ude00""#))),
+        ("payload-top-level-lone-surrogate", knobe(FM, "", r#""\ud800""#)),
+        ("surrogate-pair-escaped", knobe(FM, "", &obj(r#""x":"\ud83d\ude00""#))),
         ("surrogate-pair-escape", knobe(FM, "", &obj(r#""x":"😀""#))),
         ("escapes-mixed", knobe(FM, "", &obj(r#""x":"\u0000\u001f\b\f\n\r\t\/\\\"\u007f é""#))),
         ("nfd-key-no-collision", knobe(FM, "", &obj("\"cafe\u{301}\":\"v\",\"x\":\"e\u{301}\""))),
@@ -320,6 +395,25 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
             "block-internal-zwsp",
             raw(format!("{FM}\n-----BEGIN KNOBE B64-----\n{}\u{200b}\n-----END KNOBE B64-----\n", good_b64)),
         ),
+        (
+            "block-internal-file-separators",
+            raw(format!(
+                "{FM}\n-----BEGIN KNOBE B64-----\n{}\u{1c}\u{1d}\u{1e}\u{1f}{}\n-----END KNOBE B64-----\n",
+                &good_b64[..8],
+                &good_b64[8..]
+            )),
+        ),
+        (
+            "block-internal-line-separator",
+            raw(format!("{FM}\n-----BEGIN KNOBE B64-----\n{good_b64}\u{2028}\n-----END KNOBE B64-----\n")),
+        ),
+        (
+            "block-internal-crlf-wrapped",
+            raw(format!(
+                "{FM}\n-----BEGIN KNOBE B64-----\n{}\n-----END KNOBE B64-----\n",
+                wrap(&good_b64).replace('\n', "\r\n")
+            )),
+        ),
         ("block-at-byte-zero", raw(format!("-----BEGIN KNOBE B64-----\n{good_b64}\n-----END KNOBE B64-----\n"))),
         (
             "block-at-byte-zero-with-body-hash",
@@ -377,9 +471,64 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
             )),
         ),
     ]);
-    c.push(("file-not-utf8", [FM.as_bytes(), &[0xc3, 0x28]].concat()));
+    // Nesting limits. lens.py's lone-surrogate walk reaches 498 levels below
+    // the payload: a value or key at 499 is a RecursionError, reported with no
+    // blocks. CPython 3.13's json.loads accepts containers 9997 levels deep;
+    // scalars do not count.
+    let deep = |n: usize, inner: &str| format!(r#""x":{}"#, nest(n, inner));
+    c.extend([
+        ("deep-nesting-498", knobe(FM, "", &obj(&deep(498, "")))),
+        ("deep-nesting-499", knobe(FM, "", &obj(&deep(499, "")))),
+        ("deep-number-leaf-498", knobe(FM, "", &obj(&deep(497, "0")))),
+        ("deep-number-leaf-499", knobe(FM, "", &obj(&deep(498, "0")))),
+        ("deep-string-leaf-499", knobe(FM, "", &obj(&deep(498, r#""s""#)))),
+        ("deep-empty-object-498", knobe(FM, "", &obj(&deep(497, "{}")))),
+        ("deep-object-key-499", knobe(FM, "", &obj(&deep(497, r#"{"k":"v"}"#)))),
+        ("deep-in-payload-hash", knobe(FM, "", &obj("").replace("\"__H__\"", &nest(499, "")))),
+        ("lone-surrogate-before-deep", knobe(FM, "", &obj(&format!(r#""a":"\ud800",{}"#, deep(499, ""))))),
+        ("deep-before-lone-surrogate", knobe(FM, "", &obj(&format!(r#"{},"a":"\ud800""#, deep(499, ""))))),
+        ("deep-and-dup-key", knobe(FM, "", &obj(&format!(r#"{},"x":"1""#, deep(499, ""))))),
+        ("top-level-list-deep", knobe(FM, "", &nest(600, ""))),
+        ("deep-nesting-9997", knobe(FM, "", &obj(&deep(9997, "")))),
+        ("deep-nesting-9997-scalar-leaf", knobe(FM, "", &obj(&deep(9997, "0")))),
+        ("deep-nesting-9998", knobe(FM, "", &obj(&deep(9998, "")))),
+        ("deep-nesting-9998-then-dup-key", knobe(FM, "", &obj(&format!(r#"{},"x":"1""#, deep(9998, ""))))),
+        ("top-level-list-9998", knobe(FM, "", &nest(9998, ""))),
+        ("top-level-list-9999", knobe(FM, "", &nest(9999, ""))),
+        // A node that needs one of lens.py's Python hooks (an object, a float,
+        // NaN/Infinity) stops two levels earlier. In a top-level list, a
+        // parsed payload reads "not a JSON object", a failed one "could not
+        // be decoded or parsed".
+        ("deep-object-9995", knobe(FM, "", &nest(9995, "{}"))),
+        ("deep-object-9996", knobe(FM, "", &nest(9996, "{}"))),
+        ("deep-object-dup-key-9994", knobe(FM, "", &nest(9994, r#"{"a":1,"a":2}"#))),
+        ("deep-object-dup-key-9995", knobe(FM, "", &nest(9995, r#"{"a":1,"a":2}"#))),
+        ("deep-object-dup-key-9996", knobe(FM, "", &nest(9996, r#"{"a":1,"a":2}"#))),
+        ("deep-float-9995", knobe(FM, "", &nest(9995, "1.5"))),
+        ("deep-float-9996", knobe(FM, "", &nest(9996, "1.5"))),
+        ("deep-nan-9995", knobe(FM, "", &nest(9995, "NaN"))),
+        ("deep-nan-9996", knobe(FM, "", &nest(9996, "NaN"))),
+        ("deep-int-9998", knobe(FM, "", &nest(9998, "1"))),
+    ]);
+    // lens.py reports CPython's UnicodeDecodeError text, position included.
+    let not_utf8 = |tail: &[u8]| [FM.as_bytes(), tail].concat();
+    c.extend([
+        ("file-not-utf8", not_utf8(&[0xc3, 0x28])),
+        ("file-invalid-start-byte", not_utf8(&[0xff, b'x'])),
+        ("file-overlong", not_utf8(&[0xc0, 0xaf])),
+        ("file-surrogate-bytes", not_utf8(&[0xed, 0xa0, 0x80])),
+        ("file-bad-third-byte", not_utf8(&[0xe2, 0x82, 0x28])),
+        ("file-bad-fourth-byte", not_utf8(&[0xf0, 0x9f, 0x98, 0x28])),
+        ("file-truncated-sequence", not_utf8(&[0xe2, 0x82])),
+        ("file-truncated-four-byte", not_utf8(&[0xf0, 0x9f, 0x98])),
+    ]);
     c.push(("file-empty", Vec::new()));
     c
+}
+
+/// `inner` wrapped in `n` JSON arrays.
+fn nest(n: usize, inner: &str) -> String {
+    format!("{}{inner}{}", "[".repeat(n), "]".repeat(n))
 }
 
 /// Change the last data character before padding so unused low bits are set
@@ -410,20 +559,65 @@ const SPEC_OVER_REFERENCE: &[(&str, &str, &str, Option<&str>, &str)] = &[
     ("fm-spec-not-prefix", "I-1", "verified", Some("omitted"), "invalid"),
 ];
 
+/// Cases where knobe-rs prints what lens.py prints once it has the display
+/// fixes proposed upstream (KnobeOne/knobe-protocol, patch series
+/// 3-display-escaping). Without them, lens.py crashes on unpaired surrogates
+/// and prints bidi controls, stored_hash and issues raw, so these differ:
+/// in both reports (`true`), or in the human report only (`false`).
+const PENDING_UPSTREAM: &[(&str, bool)] = &[
+    ("dup-key-bidi", true),
+    ("dup-key-line-separator", true),
+    ("dup-key-surrogate", true),
+    ("dup-key-surrogate-in-text", true),
+    ("dup-key-surrogate-nested", true),
+    ("dup-key-long", true),
+    ("spec-version-bidi", true),
+    ("payload-hash-trailing-newline", false),
+    ("stored-ansi", false),
+    ("stored-c1", false),
+    ("stored-bidi", false),
+    ("stored-long-string", false),
+    ("stored-long-list", false),
+    ("title-bidi", false),
+    ("privacy-level-bidi", false),
+    ("numeric-key-escape", false),
+];
+
+/// Whether `name` may differ from the lens.py under test: true for a
+/// PENDING_UPSTREAM case that differs in this report (`json`: the --json one)
+/// while lens.py lacks the display patch.
+fn pending(name: &str, json: bool) -> bool {
+    !common::lens_has_display_patch() && PENDING_UPSTREAM.iter().any(|&(n, both)| n == name && (both || !json))
+}
+
+/// Writes every hostile case this python3 can arbitrate into `dir`.
+fn write_hostile_files(dir: &str) -> Vec<(&'static str, PathBuf)> {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases = hostile_cases();
+    assert_eq!(cases.len(), 202, "update the README if the battery size changes");
+    eprintln!("python3 is {}; lens.py display patch: {}", common::python_version(), common::lens_has_display_patch());
+    cases
+        .into_iter()
+        .filter(|(name, _)| !common::skip_on_this_python(name))
+        .map(|(name, bytes)| {
+            let path = dir.join(format!("{name}.knobe.md"));
+            std::fs::write(&path, bytes).unwrap();
+            (name, path)
+        })
+        .collect()
+}
+
 #[test]
 fn hostile_battery_matches_lens_py_except_documented_spec_cases() {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hostile");
-    std::fs::create_dir_all(&dir).unwrap();
     let mut diffs = Vec::new();
-    let cases = hostile_cases();
-    for (name, bytes) in &cases {
-        let path = dir.join(format!("{name}.knobe.md"));
-        std::fs::write(&path, bytes).unwrap();
-        let Some(py) = common::lens(&path) else {
+    let files = write_hostile_files("hostile");
+    for (name, path) in files.iter().filter(|(name, _)| !pending(name, true)) {
+        let Some(py) = common::lens(path) else {
             diffs.push(format!("{name}: lens.py produced no JSON report"));
             continue;
         };
-        let rs = common::rust(&path);
+        let rs = common::rust(path);
         match SPEC_OVER_REFERENCE.iter().find(|c| c.0 == *name) {
             Some((_, rule, state, body, conformance)) => {
                 let want = (Value::Str((*state).into()), body.map_or(Value::Null, |b| Value::Str(b.into())));
@@ -438,6 +632,167 @@ fn hostile_battery_matches_lens_py_except_documented_spec_cases() {
             None => {}
         }
     }
-    assert_eq!(cases.len(), 122, "update the README if the battery size changes");
-    assert!(diffs.is_empty(), "{} of {} hostile cases disagree:\n{}", diffs.len(), cases.len(), diffs.join("\n"));
+    assert!(diffs.is_empty(), "{} of {} hostile cases disagree:\n{}", diffs.len(), files.len(), diffs.join("\n"));
+}
+
+// ---------------------------------------------------------------------------
+// Complete output, byte for byte
+// ---------------------------------------------------------------------------
+
+/// Every published file, named by its path below the protocol checkout.
+fn published_files() -> Vec<(String, PathBuf)> {
+    let root = common::protocol_dir();
+    common::corpus().into_iter().map(|f| (f.strip_prefix(&root).unwrap().display().to_string(), f)).collect()
+}
+
+/// The `--json` document without the conformance fields, which is all a
+/// spec-over-reference case may differ in.
+fn without_conformance(stdout: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(stdout);
+    let doc = knobe::json::parse(&text).unwrap_or_else(|e| panic!("--json is not JSON ({e}): {text}"));
+    let Value::Object(members) = doc else { panic!("--json is not an object: {text}") };
+    Value::Object(members.into_iter().filter(|(k, _)| !k.starts_with("conformance")).collect())
+}
+
+/// The gate fields above are what upstream's harness compares. This goes
+/// further: the complete `knobe verify --json` output (every conformance
+/// issue and the unreadable reason included) and the exit code must be
+/// byte-identical to `lens.py --json`'s, so a change to upstream wording or
+/// check order fails here too. The spec-over-reference cases must differ:
+/// I-1 cases only in conformance and its issues (and so in the exit code).
+/// So must the pending ones while lens.py lacks the display patch.
+#[test]
+fn full_json_output_is_byte_identical_to_lens_py() {
+    let mut files: Vec<(String, PathBuf)> =
+        write_hostile_files("hostile-json").into_iter().map(|(n, p)| (n.to_string(), p)).collect();
+    files.extend(published_files());
+    let mut diffs = Vec::new();
+    for (name, path) in &files {
+        let (py, py_code) = common::lens_cli(&["--json"], path);
+        let (rs, rs_code) = common::knobe_cli(&["--json"], path);
+        let same = py == rs && py_code == rs_code;
+        if pending(name, true) {
+            if same {
+                diffs.push(format!("{name}: pending upstream, yet lens.py agrees; update PENDING_UPSTREAM"));
+            }
+            continue;
+        }
+        match SPEC_OVER_REFERENCE.iter().find(|c| c.0 == name.as_str()) {
+            Some((_, rule, ..)) if same => diffs.push(format!("{name} ({rule}): lens.py now agrees")),
+            // I-1 changes only conformance. I-4 moves the body, so its whole
+            // result differs; the gate battery pins that result.
+            Some((_, rule, ..)) if *rule == "I-1" && without_conformance(&py) != without_conformance(&rs) => {
+                diffs.push(format!("{name} ({rule}): differs beyond conformance"))
+            }
+            None if !same => diffs.push(format!(
+                "{name}: exit {py_code} vs {rs_code}\n--- lens.py\n{}--- knobe\n{}",
+                String::from_utf8_lossy(&py),
+                String::from_utf8_lossy(&rs)
+            )),
+            _ => {}
+        }
+    }
+    eprintln!("compared {} files", files.len());
+    assert!(diffs.is_empty(), "{} of {} files differ:\n{}", diffs.len(), files.len(), diffs.join("\n"));
+}
+
+/// The human report (`knobe verify FILE`) and exit code are byte-identical to
+/// `python3 lens.py FILE`'s too, on every published and hostile file except
+/// the spec-over-reference and pending ones, which must differ.
+#[test]
+fn human_output_is_byte_identical_to_lens_py() {
+    let mut files: Vec<(String, PathBuf)> =
+        write_hostile_files("hostile-human").into_iter().map(|(n, p)| (n.to_string(), p)).collect();
+    files.extend(published_files());
+    let mut diffs = Vec::new();
+    for (name, path) in &files {
+        let (py, py_code) = common::lens_cli(&[], path);
+        let (rs, rs_code) = common::knobe_cli(&[], path);
+        let same = py == rs && py_code == rs_code;
+        let spec = SPEC_OVER_REFERENCE.iter().find(|c| c.0 == name.as_str()).map(|c| c.1);
+        match spec.or_else(|| pending(name, false).then_some("pending upstream")) {
+            Some(why) if same => diffs.push(format!("{name} ({why}): lens.py now agrees")),
+            None if !same => diffs.push(format!(
+                "{name}: exit {py_code} vs {rs_code}\n--- lens.py\n{}--- knobe\n{}",
+                String::from_utf8_lossy(&py),
+                String::from_utf8_lossy(&rs)
+            )),
+            _ => {}
+        }
+    }
+    assert!(diffs.is_empty(), "{} of {} files differ:\n{}", diffs.len(), files.len(), diffs.join("\n"));
+}
+
+/// File names lens.py can hold only as surrogates (bytes that are not UTF-8)
+/// or that carry control and bidi characters: the reasons quote the path.
+/// Unpatched lens.py crashes on some of these and prints others raw.
+#[cfg(unix)]
+#[test]
+fn file_name_reasons_are_byte_identical_to_lens_py() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("paths");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = |name: &[u8]| dir.join(std::ffi::OsStr::from_bytes(name));
+    let baseline = knobe(FM, "", &obj(""));
+    std::fs::write(path(b"exists-\xff.knobe.md"), &baseline).unwrap();
+    std::fs::write(path(b"plain"), "x").unwrap();
+    std::fs::create_dir_all(path(b"dir-\xff\xed\xa0\x80")).unwrap();
+    std::fs::write(path(b"noperm-\xff"), &baseline).unwrap();
+    std::fs::set_permissions(path(b"noperm-\xff"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    // As root the mode-000 file is readable: nothing to compare then.
+    let root = std::fs::read(path(b"noperm-\xff")).is_ok();
+    // (name, the case's file name, pending: unpatched lens.py differs)
+    let cases: &[(&str, &[u8], bool)] = &[
+        ("missing-not-utf8", b"missing-\xff\xc3.knobe.md", true),
+        ("missing-ansi", b"missing-\x1b[31m.knobe.md", true),
+        ("missing-bidi", "missing-\u{202e}\u{2028}.knobe.md".as_bytes(), true),
+        ("directory-not-utf8", b"dir-\xff\xed\xa0\x80", true),
+        ("exists-not-utf8", b"exists-\xff.knobe.md", false),
+        ("not-a-directory", b"plain/it's-\xff", false),
+        ("no-permission", b"noperm-\xff", false),
+    ];
+    let mut diffs = Vec::new();
+    for &(name, file, is_pending) in cases {
+        if name == "no-permission" && root {
+            eprintln!("{name}: skipped, running as root");
+            continue;
+        }
+        for args in [&["--json"][..], &[][..]] {
+            let (py, py_code) = common::lens_cli(args, &path(file));
+            let (rs, rs_code) = common::knobe_cli(args, &path(file));
+            let same = py == rs && py_code == rs_code;
+            if is_pending && !common::lens_has_display_patch() {
+                if same {
+                    diffs.push(format!("{name} {args:?}: pending upstream, yet lens.py agrees"));
+                }
+            } else if !same {
+                diffs.push(format!(
+                    "{name} {args:?}: exit {py_code} vs {rs_code}\n--- lens.py\n{}--- knobe\n{}",
+                    String::from_utf8_lossy(&py),
+                    String::from_utf8_lossy(&rs)
+                ));
+            }
+        }
+    }
+    std::fs::set_permissions(path(b"noperm-\xff"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(diffs.is_empty(), "{} differ:\n{}", diffs.len(), diffs.join("\n"));
+}
+
+/// repr() escapes what CPython's str.isprintable() rejects; knobe carries
+/// that table (src/pyprintable.rs), generated from CPython 3.13.
+#[test]
+fn printable_table_matches_cpython() {
+    if common::python_version() != "3.13" {
+        eprintln!("skipped: the table is CPython 3.13's and python3 is {}", common::python_version());
+        return;
+    }
+    let out = Command::new("python3")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/gen_pyprintable.py"))
+        .output()
+        .expect("python3");
+    assert!(out.status.success());
+    let ours = include_str!("../src/pyprintable.rs");
+    assert!(out.stdout == ours.as_bytes(), "src/pyprintable.rs is stale: rerun tests/support/gen_pyprintable.py");
 }

@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "knobe"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "sha2",
  "unicode-normalization",

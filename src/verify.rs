@@ -8,8 +8,10 @@ use std::path::Path;
 
 use crate::canon::{body_hash, nfc, payload_hash};
 use crate::conformance;
-use crate::json::{self, ParseError, Value, to_pretty};
-use crate::pyfmt::{is_py_space, py_strip, repr_str, safe, safe_str, truthy, type_name};
+use crate::json::{self, ParseError, Parsed, Scan, Value, to_pretty};
+use crate::pyfmt::{
+    Undecoded, display_py, is_py_space, py_str, py_strip, repr_py, repr_str, safe_str, truthy, type_name,
+};
 use crate::{SUPPORTED_SPEC_VERSIONS, b64};
 
 pub const BEGIN_MARKER: &str = "-----BEGIN KNOBE B64-----";
@@ -101,7 +103,8 @@ pub struct Report {
 }
 
 impl Report {
-    fn unreadable(reason: String, block_count: usize, payload: Option<Value>) -> Report {
+    /// An `unreadable` report, as lens.py's `_unreadable` builds it.
+    pub fn unreadable(reason: String, block_count: usize, payload: Option<Value>) -> Report {
         Report {
             state: State::Unreadable,
             computed: None,
@@ -166,22 +169,53 @@ pub struct Frontmatter {
 pub fn verify_path(path: &Path) -> Report {
     match std::fs::read(path) {
         Ok(bytes) => verify_bytes(&bytes),
-        Err(e) => {
-            let p = path.display();
-            let reason = match e.kind() {
-                std::io::ErrorKind::NotFound => format!("file not found: {p}"),
-                std::io::ErrorKind::IsADirectory => format!("path is a directory, not a file: {p}"),
-                _ => format!("could not read file: {e}"),
-            };
-            Report::unreadable(reason, 0, None)
+        Err(e) => Report::unreadable(read_error(path, &e), 0, None),
+    }
+}
+
+/// lens.py's reason for a file it cannot read. Python holds the path as it
+/// decodes a command-line argument, so bytes that are not UTF-8 show as
+/// `\udcXX`, through safe() or, in an OSError's text, repr().
+fn read_error(path: &Path, e: &std::io::Error) -> String {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let shown = || safe_str(&display_py(bytes, Undecoded::SurrogateEscape), usize::MAX);
+    match (e.kind(), e.raw_os_error()) {
+        (std::io::ErrorKind::NotFound, _) => format!("file not found: {}", shown()),
+        (std::io::ErrorKind::IsADirectory, _) => format!("path is a directory, not a file: {}", shown()),
+        // Python's str(OSError) is "[Errno N] <strerror>: <repr(path)>"; Rust's
+        // text is the same strerror with " (os error N)" after it.
+        (_, Some(code)) => {
+            let text = e.to_string();
+            let strerror = text.strip_suffix(&format!(" (os error {code})")).unwrap_or(&text);
+            format!("could not read file: [Errno {code}] {strerror}: {}", repr_py(bytes, Undecoded::SurrogateEscape))
         }
+        (_, None) => format!("could not read file: {e}"),
     }
 }
 
 pub fn verify_bytes(bytes: &[u8]) -> Report {
     match std::str::from_utf8(bytes) {
         Ok(raw) => verify_str(raw),
-        Err(e) => Report::unreadable(format!("file is not valid UTF-8: {e}"), 0, None),
+        Err(e) => Report::unreadable(format!("file is not valid UTF-8: {}", utf8_error_text(bytes, &e)), 0, None),
+    }
+}
+
+/// CPython's `UnicodeDecodeError` text for the first invalid UTF-8 sequence,
+/// which lens.py quotes, e.g. "'utf-8' codec can't decode byte 0xc3 in
+/// position 39: invalid continuation byte". CPython's span is Rust's
+/// `error_len`, or the rest of the input when a sequence is cut short.
+fn utf8_error_text(bytes: &[u8], e: &std::str::Utf8Error) -> String {
+    let start = e.valid_up_to();
+    let (len, why) = match e.error_len() {
+        None => (bytes.len() - start, "unexpected end of data"),
+        // A lead byte, followed by a byte that cannot continue it.
+        Some(n) if (0xc2..=0xf4).contains(&bytes[start]) => (n, "invalid continuation byte"),
+        Some(n) => (n, "invalid start byte"),
+    };
+    if len == 1 {
+        format!("'utf-8' codec can't decode byte 0x{:02x} in position {start}: {why}", bytes[start])
+    } else {
+        format!("'utf-8' codec can't decode bytes in position {start}-{}: {why}", start + len - 1)
     }
 }
 
@@ -193,8 +227,8 @@ pub fn verify_str(raw: &str) -> Report {
     };
     let payload = match decode_payload(last).and_then(admit) {
         Ok(p) => p,
-        Err(Rejection { reason, payload, issue }) => {
-            let mut r = Report::unreadable(reason, n, payload);
+        Err(Rejection { reason, payload, issue, no_blocks }) => {
+            let mut r = Report::unreadable(reason, if no_blocks { 0 } else { n }, payload);
             if let Some(issue) = issue {
                 r.conformance_issues = vec![issue];
             }
@@ -252,20 +286,26 @@ struct Rejection {
     payload: Option<Value>,
     /// Replacement conformance issue, when it differs from the reason.
     issue: Option<String>,
+    /// Report a block count of 0, as lens.py does when `verify()` raises and
+    /// its command line builds the report without the blocks.
+    no_blocks: bool,
 }
 
 impl Rejection {
     fn new(reason: String) -> Self {
-        Rejection { reason, payload: None, issue: None }
+        Rejection { reason, payload: None, issue: None, no_blocks: false }
     }
 }
 
+const LONE_SURROGATE: &str =
+    "payload contains characters that cannot be UTF-8 encoded (e.g. an unpaired surrogate); rejected";
+
 /// Decode and parse the last block, rejecting ambiguous or illegal JSON.
-fn decode_payload(block: &str) -> Result<Value, Rejection> {
+fn decode_payload(block: &str) -> Result<Parsed, Rejection> {
     let Some(text) = b64::decode_block(block).and_then(|bytes| String::from_utf8(bytes).ok()) else {
         return Err(Rejection::new("payload could not be decoded or parsed".into()));
     };
-    json::parse(&text).map_err(|e| {
+    json::parse_payload(&text).map_err(|e| {
         Rejection::new(match e {
             ParseError::DuplicateKey(k) => {
                 format!("payload contains duplicate JSON key: {} (ambiguous; rejected)", safe_str(&k, 300))
@@ -273,19 +313,27 @@ fn decode_payload(block: &str) -> Result<Value, Rejection> {
             ParseError::NonJsonConstant => {
                 "payload contains a non-JSON numeric constant (NaN/Infinity); rejected".into()
             }
-            ParseError::LoneSurrogate => {
-                "payload contains characters that cannot be UTF-8 encoded (e.g. an unpaired surrogate); rejected".into()
-            }
+            ParseError::LoneSurrogate => LONE_SURROGATE.into(),
             ParseError::Syntax { .. } => "payload could not be decoded or parsed".into(),
         })
     })
 }
 
-/// The structural gates before hashing: a JSON object, no NFC key
+/// The structural gates before hashing, in lens.py's order: a JSON object,
+/// no unpaired surrogate (within the nesting lens.py can walk), no NFC key
 /// collisions, and a spec_version this verifier implements.
-fn admit(payload: Value) -> Result<Value, Rejection> {
+fn admit(Parsed { value: payload, scan }: Parsed) -> Result<Value, Rejection> {
     if !matches!(payload, Value::Object(_)) {
         return Err(Rejection::new(format!("payload is not a JSON object (got {})", type_name(&payload))));
+    }
+    match scan {
+        Scan::Clean => {}
+        Scan::LoneSurrogate => return Err(Rejection::new(LONE_SURROGATE.into())),
+        // lens.py's walk raises RecursionError, which its command line reports.
+        Scan::TooDeep => {
+            let reason = "verifier error (RecursionError); rejected".into();
+            return Err(Rejection { no_blocks: true, ..Rejection::new(reason) });
+        }
     }
     let collisions = nfc_collisions(&payload, "");
     if !collisions.is_empty() {
@@ -295,14 +343,11 @@ fn admit(payload: Value) -> Result<Value, Rejection> {
     // An unsupported spec_version cannot be honestly verified.
     if let Some(sv) = payload.get("spec_version").filter(|v| **v != Value::Null) {
         if !sv.as_str().is_some_and(|s| SUPPORTED_SPEC_VERSIONS.contains(&s)) {
-            let shown = match sv {
-                Value::Str(s) => safe_str(s, 300),
-                other => safe(other),
-            };
+            let shown = safe_str(&py_str(sv), 300); // lens.py: safe(str(sv))
             return Err(Rejection {
-                reason: format!("unsupported spec_version: {shown}"),
                 issue: Some(format!("unsupported spec_version: {shown} (this verifier supports ['1.0'])")),
                 payload: Some(payload),
+                ..Rejection::new(format!("unsupported spec_version: {shown}"))
             });
         }
     }
@@ -502,6 +547,99 @@ mod tests {
         // Control: the same file with a finite number is merely failed.
         let r = verify_str(&with_payload_hash("5"));
         assert_eq!((r.state, r.exit_code()), (State::Failed, 1));
+    }
+
+    #[test]
+    fn utf8_errors_read_as_cpython_reports_them() {
+        // Expected texts produced by CPython 3.13 bytes.decode("utf-8").
+        let text = |b: &[u8]| verify_bytes(b).reason.unwrap();
+        let cases: &[(&[u8], &str)] = &[
+            (b"ab\xc3(", "byte 0xc3 in position 2: invalid continuation byte"),
+            (b"\xff", "byte 0xff in position 0: invalid start byte"),
+            (b"\x80x", "byte 0x80 in position 0: invalid start byte"),
+            (b"\xc0\xaf", "byte 0xc0 in position 0: invalid start byte"),
+            (b"\xed\xa0\x80", "byte 0xed in position 0: invalid continuation byte"),
+            (b"\xe0\x80\x80", "byte 0xe0 in position 0: invalid continuation byte"),
+            (b"\xe2\x82(", "bytes in position 0-1: invalid continuation byte"),
+            (b"x\xf0\x9f\x98(", "bytes in position 1-3: invalid continuation byte"),
+            (b"\xc3", "byte 0xc3 in position 0: unexpected end of data"),
+            (b"\xf0\x9f\x98", "bytes in position 0-2: unexpected end of data"),
+        ];
+        for (bytes, want) in cases {
+            assert_eq!(text(bytes), format!("file is not valid UTF-8: 'utf-8' codec can't decode {want}"));
+        }
+    }
+
+    /// A file with `payload` as its block, sealed or not.
+    fn with_payload(payload: &str) -> String {
+        format!(
+            "---\nspec_version: \"1.0\"\n---\n\n{BEGIN_MARKER}\n{}\n{END_MARKER}\n",
+            b64::encode(payload.as_bytes())
+        )
+    }
+
+    #[test]
+    fn checks_payloads_in_lens_py_order() {
+        let reason = |payload: &str| verify_str(&with_payload(payload)).reason.unwrap_or_default();
+        const SURROGATE: &str = LONE_SURROGATE;
+        // Object check, then surrogates, then NFC collisions, then spec_version.
+        assert_eq!(reason(r#""\ud800""#), "payload is not a JSON object (got str)");
+        assert_eq!(reason(r#"{"spec_version":"2.0","a":"\ud800"}"#), SURROGATE);
+        assert_eq!(reason("{\"caf\u{e9}\":1,\"cafe\u{301}\":2,\"a\":\"\\udc00\"}"), SURROGATE);
+        // A parse error anywhere comes before both.
+        assert_eq!(reason(r#"{"a":"\ud800","a":1}"#), "payload contains duplicate JSON key: a (ambiguous; rejected)");
+        assert_eq!(reason(r#"{"a":"\ud800",}"#), "payload could not be decoded or parsed");
+    }
+
+    #[test]
+    fn a_non_string_spec_version_is_shown_as_python_str() {
+        let reason = |sv: &str| verify_str(&with_payload(&format!(r#"{{"spec_version":{sv}}}"#))).reason.unwrap();
+        assert_eq!(reason(r#"["1.0"]"#), "unsupported spec_version: ['1.0']");
+        assert_eq!(reason("true"), "unsupported spec_version: True");
+        assert_eq!(reason(r#"{"v":1.0}"#), "unsupported spec_version: {'v': 1.0}");
+        let long = reason(&format!("[{}]", vec!["\"xxxxxxxx\""; 40].join(",")));
+        assert_eq!(long.chars().count(), "unsupported spec_version: ".len() + 300 + 1);
+        assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_duplicate_key_with_an_unpaired_surrogate_is_reported() {
+        // The surrogate shows as \udXXX, as the patched lens.py's safe() shows
+        // it (unpatched lens.py crashes printing the key).
+        let r = verify_str(&with_payload(r#"{"\ud800":"1","x\u001b\udfff\u202e":"2","\ud800":"3"}"#));
+        assert_eq!(r.reason.as_deref(), Some(r"payload contains duplicate JSON key: \ud800 (ambiguous; rejected)"));
+        let r = verify_str(&with_payload(r#"{"x\u001b\udfff\u202e":"1","x\u001b\udfff\u202e":"2"}"#));
+        assert_eq!(
+            r.reason.as_deref(),
+            Some(r"payload contains duplicate JSON key: x\x1b\udfff\u202e (ambiguous; rejected)")
+        );
+        assert!(json::parse(&r.to_json()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_errors_show_the_path_as_lens_py_does() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::env::temp_dir().join(format!("knobe-read-errors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |name: &[u8]| dir.join(std::ffi::OsStr::from_bytes(name));
+        let reason = |p: &Path| verify_path(p).reason.unwrap();
+        let d = dir.display();
+        assert_eq!(
+            reason(&path(b"missing-\xff\x1b\xe2\x80\xae.md")),
+            format!(r"file not found: {d}/missing-\udcff\x1b\u202e.md")
+        );
+        std::fs::create_dir_all(path(b"dir-\xed\xa0\x80")).unwrap();
+        assert_eq!(
+            reason(&path(b"dir-\xed\xa0\x80")),
+            format!(r"path is a directory, not a file: {d}/dir-\udced\udca0\udc80")
+        );
+        std::fs::write(path(b"file"), "x").unwrap();
+        assert_eq!(
+            reason(&path(b"file/it's-\xff")),
+            format!(r#"could not read file: [Errno 20] Not a directory: "{d}/file/it's-\udcff""#)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

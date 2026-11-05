@@ -1,6 +1,8 @@
 //! Resource bounds on hostile input: verification must stay linear in the
 //! number of keys (a duplicate-key check by linear scan made a 3 MB file take
-//! tens of seconds), and deep nesting must fail cleanly.
+//! tens of seconds), and deep nesting must fail cleanly. The parser keeps its
+//! own stack; only payloads lens.py can walk (498 levels) reach the
+//! recursive steps (hashing, NFC checks, output, drop).
 
 use std::time::{Duration, Instant};
 
@@ -52,4 +54,32 @@ fn deep_nesting_is_unreadable_not_a_stack_overflow() {
     let deep = format!("{{\"a\":{}{}}}", "[".repeat(100_000), "]".repeat(100_000));
     let r = knobe::verify_bytes(&file_with_payload(&deep));
     assert_eq!(r.state, State::Unreadable);
+    assert_eq!(r.reason.as_deref(), Some("payload could not be decoded or parsed"));
+}
+
+/// On a thread with Rust's default stack (2 MB). Measured need: about 700 KB
+/// in a debug build, 250 KB in release.
+fn on_default_thread(file: Vec<u8>) -> knobe::Report {
+    std::thread::Builder::new().stack_size(2 << 20).spawn(move || knobe::verify_bytes(&file)).unwrap().join().unwrap()
+}
+
+#[test]
+fn the_deepest_payload_lens_py_accepts_verifies_on_a_default_thread() {
+    // Arrays, objects and payload_hash (which is printed whole) at 498 levels.
+    let arrays = format!("{}{}", "[".repeat(498), "]".repeat(498));
+    let objects = format!("{}\"v\"{}", "{\"k\":".repeat(497), "}".repeat(497));
+    let payload = format!(r#"{{"spec_version":"1.0","x":{arrays},"y":{objects},"payload_hash":{arrays}}}"#);
+    let r = on_default_thread(file_with_payload(&payload));
+    assert_eq!(r.state, State::Failed); // fully evaluated: hashed, checked, compared
+    assert!(r.to_json().len() > 400_000);
+}
+
+#[test]
+fn nesting_lens_py_cannot_walk_is_a_verifier_error_with_no_blocks() {
+    for (levels, blocks) in [(499, 0), (9997, 0)] {
+        let deep = format!("{{\"a\":{}{}}}", "[".repeat(levels), "]".repeat(levels));
+        let r = on_default_thread(file_with_payload(&deep));
+        assert_eq!(r.reason.as_deref(), Some("verifier error (RecursionError); rejected"), "{levels}");
+        assert_eq!((r.state, r.block_count), (State::Unreadable, blocks), "{levels}");
+    }
 }

@@ -1,6 +1,6 @@
 # Interpretation record
 
-This file records where the KNOBE Protocol v1 specification leaves room for interpretation, which reading knobe-rs implements, and why. It was compiled by checking the code against the specification text (`site/spec.html` §3–§10, KnobeOne/knobe-protocol at `c7ada1f`), its [ERRATA](https://github.com/KnobeOne/knobe-protocol/blob/main/ERRATA.md), and the published test vectors. It was brought up to date for 0.1.1 against KnobeOne/knobe-protocol at `6132595`, which includes PR #11 (hostile input is reported unreadable), PR #12 and ERRATA E12 (ASCII-strict formats and block whitespace).
+This file records where the KNOBE Protocol v1 specification leaves room for interpretation, which reading knobe-rs implements, and why. It was compiled by checking the code against the specification text (`site/spec.html` §3–§10, KnobeOne/knobe-protocol at `c7ada1f`), its [ERRATA](https://github.com/KnobeOne/knobe-protocol/blob/main/ERRATA.md), and the published test vectors. It was brought up to date for 0.1.1 against KnobeOne/knobe-protocol at `6132595`, which includes PR #11 (hostile input is reported unreadable), PR #12 and ERRATA E12 (ASCII-strict formats and block whitespace), and for 0.1.2 with the rest of PR #11's limits (nesting, integer length, check order).
 
 The order of authority follows the steward's governance:
 
@@ -38,6 +38,8 @@ knobe-rs 0.1.0 stripped only CR and LF, reading §3.3 ("Line breaks within the B
 
 Since 0.1.1, knobe-rs strips the same four characters, so this entry has moved to the [table below](#where-knobe-rs-follows-lenspy-because-the-vectors-or-errata-decide-it). The number is kept so older references stay valid. No vector pins a space or tab inside a block yet.
 
+- [x] Reviewed by maintainer (2026-11-04, for 0.1.2: keep stripping space, tab, CR and LF)
+
 ### I-4. The body starts after the second `---` line, counted from the start of the file
 
 - [ ] Reviewed by maintainer
@@ -72,7 +74,10 @@ Since 0.1.1, knobe-rs strips the same four characters, so this entry has moved t
 | BOM before the frontmatter | §3.1 says the file "MUST begin with" frontmatter; nothing about a BOM | Skipped when checking that frontmatter exists, as `lens.py`; not skipped when counting `---` lines for §6 (I-4) |
 | Line endings in `---` lines | "exactly ---" with CRLF files | Trailing CRs ignored, as `lens.py` |
 | `attribution.sources` "at least one entry" | What counts as present | Python truthiness, as `lens.py` |
-| Unrecognized `spec_version` | §9 says "SHOULD report this clearly" | `unreadable`, as pinned by `unsupported-spec-version`; a non-string value (a number, list or object) is unsupported too, as `lens.py` since PR #11 |
+| Unrecognized `spec_version` | §9 says "SHOULD report this clearly" | `unreadable`, as pinned by `unsupported-spec-version`; a non-string value (a number, list or object) is unsupported too, and shown as Python `str()` shows it, as `lens.py` since PR #11 |
+| Nesting depth | RFC 8259 §9 lets a parser limit nesting; the spec sets no limit | As `lens.py` on CPython 3.13: a value or key 499 or more levels below the payload is `unreadable` (`verifier error (RecursionError)`, block count 0). An array more than 9997 levels deep, an object, float or NaN/Infinity more than 9995, or an object with a duplicate key 9995 or more, cannot be parsed ("could not be decoded or parsed") |
+| Integer length | RFC 8259 §9 lets a parser limit the range of numbers; §5 hashes integers as written | More than 4300 digits is `unreadable`, Python's limit for `int()` |
+| Which defect is reported | §7 lists the `unreadable` conditions but not their order | `lens.py`'s order: a parse error (a duplicate key counts once its object closes), then a payload that is not an object, an unpaired surrogate, an NFC key collision, and an unsupported `spec_version` |
 | A number that overflows to infinity, e.g. `1e400` | RFC 8259 allows the lexeme, but §5 has no canonical form for infinity, and no ERRATA entry or vector covers it | `unreadable` wherever it appears, `payload_hash` included, as `lens.py` and `knobe-core.js` since PR #11. An integer of any length stays readable, and a float that underflows becomes `0.0` |
 
 ## Not checked
