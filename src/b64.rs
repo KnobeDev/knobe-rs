@@ -1,7 +1,8 @@
-//! Standard Base64 (RFC 4648 §4). Spec §3.3: "Line breaks within the Base64
-//! block MUST be ignored"; RFC 4648 §3.3 requires rejecting every other
-//! character outside the alphabet unless the referring spec says otherwise,
-//! so only CR and LF are skipped (docs/INTERPRETATIONS.md, I-3). Padding is
+//! Standard Base64 (RFC 4648 §4). ASCII space, tab, CR and LF are stripped
+//! from a payload block, the set ERRATA E12 allows and the set lens.py and
+//! knobe-core.js strip (a different set would split verdicts, which E12's
+//! grounds call a defect; docs/INTERPRETATIONS.md, I-3). Any other character
+//! outside the alphabet makes the block invalid (RFC 4648 §3.3). Padding is
 //! required (ERRATA E7); non-zero unused trailing bits are accepted, as
 //! CPython does.
 
@@ -14,7 +15,7 @@ fn sextet(c: u8) -> Option<u32> {
 /// Decode a payload block. None if it is not strict, padded standard Base64.
 pub fn decode_block(block: &str) -> Option<Vec<u8>> {
     let mut clean = Vec::with_capacity(block.len());
-    for c in block.chars().filter(|c| !matches!(c, '\r' | '\n')) {
+    for c in block.chars().filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n')) {
         clean.push(u8::try_from(c).ok().filter(u8::is_ascii)?);
     }
     if clean.len() % 4 != 0 {
@@ -61,11 +62,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_ignores_only_line_breaks() {
+    fn decode_ignores_only_ascii_space_tab_cr_lf() {
         assert_eq!(decode_block("QQ=="), Some(b"A".to_vec()));
         assert_eq!(decode_block("QR=="), Some(b"A".to_vec())); // trailing bits accepted
         assert_eq!(decode_block(""), Some(vec![]));
         assert_eq!(decode_block("Q\r\nQ\n=\r="), Some(b"A".to_vec()));
+        assert_eq!(decode_block(" Q\tQ = =\t\r\n "), Some(b"A".to_vec()));
         for bad in [
             "QQ=",
             "QQ",
@@ -74,10 +76,14 @@ mod tests {
             "Q===",
             "QQ-_",
             "QQ\u{200b}==",
-            " QQ==",
-            "Q\tQ==",
             "QQ\u{a0}==",
             "QQ\u{1c}==",
+            "QQ\u{1f}==",
+            "QQ\u{85}==",
+            "QQ\u{0b}==",
+            "QQ\u{0c}==",
+            "QQ\u{3000}==",
+            "QQ\u{feff}==",
         ] {
             assert_eq!(decode_block(bad), None, "{bad:?}");
         }

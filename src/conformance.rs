@@ -28,9 +28,8 @@ const CANONICAL_VOCAB: &[(&str, &[&str])] = &[
     ("identity_status", &["declared", "signed"]),
 ];
 
-/// Spec §4.1/§4.3: "exactly 64 lowercase hexadecimal characters". Spec text
-/// over reference (see docs/INTERPRETATIONS.md, I-2): lens.py's `$` also
-/// accepts a trailing "\n"; the spec's "exactly" does not.
+/// Spec §4.1/§4.3: "exactly 64 lowercase hexadecimal characters", with
+/// nothing following (ERRATA E12; lens.py and knobe-core.js agree).
 fn hex64(v: &Value) -> bool {
     let Value::Str(s) = v else { return false };
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))

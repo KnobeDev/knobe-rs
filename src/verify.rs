@@ -202,8 +202,9 @@ pub fn verify_str(raw: &str) -> Report {
         }
     };
 
-    // Canonical hash (spec §5). A float that overflowed to inf has no
-    // canonical form, so the file is unreadable.
+    // Canonical hash (spec §5). The parser already rejects a float that
+    // overflows to inf (anywhere, payload_hash included), so this cannot fail
+    // for parsed input; a value with no canonical form is never hashed.
     let Ok(computed) = payload_hash(&payload) else {
         let reason = "payload contains a number that cannot be canonicalized (overflows to infinity); rejected";
         return Report::unreadable(reason.into(), n, Some(payload));
@@ -469,6 +470,38 @@ mod tests {
         assert_eq!(spec_version_line("spec_version:   "), Some(String::new()));
         assert_eq!(spec_version_line("spec_version:"), None);
         assert_eq!(spec_version_line("spec_versionx: 1"), None);
+    }
+
+    /// A payload whose only defect is `payload_hash` set to `ph` (a JSON lexeme).
+    fn with_payload_hash(ph: &str) -> String {
+        let payload = format!(
+            r#"{{"spec_version":"1.0","title":"T","summary":"S","content_type":"original","created_date":"2026-01-02","license":"CC0-1.0","privacy_level":"public","quarantine_status":"quarantine","attribution":{{"sources":[{{"author":"A"}}]}},"payload_hash":{ph}}}"#
+        );
+        format!(
+            "---\nspec_version: \"1.0\"\n---\n\n{BEGIN_MARKER}\n{}\n{END_MARKER}\n",
+            b64::encode(payload.as_bytes())
+        )
+    }
+
+    #[test]
+    fn overflowing_payload_hash_is_unreadable_and_json_stays_valid() {
+        // payload_hash is excluded from the canonical form, so an overflow
+        // there used to slip past hashing and print `"stored": Infinity`.
+        for ph in ["1e400", "-1e400", "1.5E+999", "[1e400]", r#"{"a":1e400}"#] {
+            let r = verify_str(&with_payload_hash(ph));
+            assert_eq!(r.state, State::Unreadable, "{ph}");
+            assert_eq!(r.exit_code(), 2, "{ph}");
+            assert_eq!(
+                r.reason.as_deref(),
+                Some("payload contains a non-JSON numeric constant (NaN/Infinity); rejected"),
+                "{ph}"
+            );
+            let doc = json::parse(&r.to_json()).unwrap_or_else(|e| panic!("{ph}: --json is not JSON ({e})"));
+            assert_eq!(doc.get("stored"), Some(&Value::Null), "{ph}");
+        }
+        // Control: the same file with a finite number is merely failed.
+        let r = verify_str(&with_payload_hash("5"));
+        assert_eq!((r.state, r.exit_code()), (State::Failed, 1));
     }
 
     #[test]

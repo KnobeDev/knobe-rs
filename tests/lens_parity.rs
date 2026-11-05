@@ -131,7 +131,7 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
     let mut c: Vec<(&'static str, Vec<u8>)> = vec![
         ("baseline", knobe(FM, "", &obj(""))),
         ("baseline-with-body", knobe(FM, body, &obj(bh))),
-        // --- hash-format regexes: Python `$` also matches before a final \n ---
+        // --- hash format: exactly 64 lowercase hex, nothing following (ERRATA E12) ---
         (
             "payload-hash-trailing-newline",
             knobe(
@@ -212,6 +212,15 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
             ),
         ),
         ("numbers-bool-null-not-numeric", knobe(FM, "", &obj(r#""flag":true,"none":null,"deep":{"a":[false]}"#))),
+        ("number-underflow-to-zero", knobe(FM, "", &obj(r#""x":1e-400"#))),
+        ("number-int-beyond-float-range", knobe(FM, "", &obj(&format!(r#""x":1{}"#, "0".repeat(400))))),
+        // --- a float that overflows to inf has no canonical form: unreadable (lens.py PR #11) ---
+        ("number-overflow-in-field", knobe(FM, "", &obj(r#""x":1e400"#))),
+        ("number-overflow-nested", knobe(FM, "", &obj(r#""ext":{"a":[-1e309]}"#))),
+        // payload_hash is left out of the hash, so only the parser can catch these.
+        ("payload-hash-overflow", knobe(FM, "", &obj("").replace("\"__H__\"", "1e400"))),
+        ("payload-hash-overflow-negative", knobe(FM, "", &obj("").replace("\"__H__\"", "-1.5E+999"))),
+        ("payload-hash-overflow-in-list", knobe(FM, "", &obj("").replace("\"__H__\"", "[1e400]"))),
         // --- JSON strictness ---
         ("dup-key-nested", knobe(FM, "", &obj(r#""ext":{"a":"1","a":"2"}"#))),
         ("nan-constant", knobe(FM, "", &obj(r#""x":NaN"#))),
@@ -294,6 +303,18 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
         (
             "block-internal-unicode-space",
             raw(format!("{FM}\n-----BEGIN KNOBE B64-----\n{}\u{a0}\u{1c}\n-----END KNOBE B64-----\n", good_b64)),
+        ),
+        (
+            "block-internal-nel",
+            raw(format!("{FM}\n-----BEGIN KNOBE B64-----\n{}\u{85}\n-----END KNOBE B64-----\n", good_b64)),
+        ),
+        (
+            "block-internal-vt-ff",
+            raw(format!(
+                "{FM}\n-----BEGIN KNOBE B64-----\n{}\u{b}{}\u{c}\n-----END KNOBE B64-----\n",
+                &good_b64[..8],
+                &good_b64[8..]
+            )),
         ),
         (
             "block-internal-zwsp",
@@ -379,9 +400,6 @@ fn flip_trailing_bits(b: &str) -> String {
 /// Each must differ from lens.py; if lens.py starts agreeing (an upstream fix
 /// landed), the test fails so the entry can be removed.
 const SPEC_OVER_REFERENCE: &[(&str, &str, &str, Option<&str>, &str)] = &[
-    ("payload-hash-trailing-newline", "I-2", "failed", Some("omitted"), "invalid"),
-    ("body-hash-trailing-newline", "I-2", "verified-body-modified", Some("modified"), "invalid"),
-    ("parent-hash-trailing-newline", "I-2", "verified", Some("omitted"), "invalid"),
     ("fm-crlf-with-body", "I-1", "verified", Some("yes"), "invalid"),
     ("fm-double-cr", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-double-cr-with-body", "I-1, I-4", "verified", Some("yes"), "invalid"),
@@ -390,8 +408,6 @@ const SPEC_OVER_REFERENCE: &[(&str, &str, &str, Option<&str>, &str)] = &[
     ("fm-spec-empty", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-spec-after-close-ignored", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-spec-not-prefix", "I-1", "verified", Some("omitted"), "invalid"),
-    ("block-internal-spaces-tabs", "I-3", "unreadable", None, "invalid"),
-    ("block-internal-unicode-space", "I-3", "unreadable", None, "invalid"),
 ];
 
 #[test]
@@ -422,6 +438,6 @@ fn hostile_battery_matches_lens_py_except_documented_spec_cases() {
             None => {}
         }
     }
-    assert_eq!(cases.len(), 113, "update the README if the battery size changes");
+    assert_eq!(cases.len(), 122, "update the README if the battery size changes");
     assert!(diffs.is_empty(), "{} of {} hostile cases disagree:\n{}", diffs.len(), cases.len(), diffs.join("\n"));
 }

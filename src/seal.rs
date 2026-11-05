@@ -276,6 +276,7 @@ mod tests {
         assert_eq!(n("1e-7"), Ok("1e-07".into()));
         assert_eq!(n("9007199254740991"), Ok("9007199254740991".into()));
         assert!(n("9007199254740992").is_err());
-        assert!(n("1e400").is_err());
+        // The parser rejects 1e400, but a hand-built Value can still hold inf.
+        assert_eq!(js_number_string(&Value::Float(f64::INFINITY)), Err(SealError::NonFiniteNumber));
     }
 }

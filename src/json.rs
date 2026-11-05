@@ -1,7 +1,9 @@
-//! Strict JSON (RFC 8259) with the protocol's ambiguity rules: duplicate keys
-//! are rejected at any depth, NaN/Infinity are rejected, lone UTF-16
-//! surrogate escapes are rejected (they cannot be UTF-8 canonicalized), and
-//! integers keep every digit like Python's int. Objects keep insertion order.
+//! Strict JSON (RFC 8259) with the protocol's ambiguity rules, applied at any
+//! depth: duplicate keys are rejected; NaN/Infinity are rejected, and so is a
+//! float that overflows to infinity (e.g. `1e400`, as lens.py since PR #11);
+//! lone UTF-16 surrogate escapes are rejected (they cannot be UTF-8
+//! canonicalized). Integers keep every digit like Python's int, and objects
+//! keep insertion order. A parsed value therefore always has a canonical form.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -60,7 +62,9 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::DuplicateKey(k) => write!(f, "duplicate JSON key: {k}"),
-            ParseError::NonJsonConstant => write!(f, "non-JSON numeric constant (NaN/Infinity)"),
+            ParseError::NonJsonConstant => {
+                write!(f, "non-JSON numeric constant (NaN, Infinity, or a number that overflows to infinity)")
+            }
             ParseError::LoneSurrogate => write!(f, "unpaired UTF-16 surrogate escape"),
             ParseError::Syntax { msg, offset } => write!(f, "{msg} at byte {offset}"),
         }
@@ -312,8 +316,14 @@ impl Parser<'_> {
         if is_int {
             Ok(Value::Int(lexeme.to_string()))
         } else {
-            // Correctly rounded, like Python float(); overflow becomes inf.
-            Ok(Value::Float(lexeme.parse().expect("validated float lexeme")))
+            // Correctly rounded, like Python float(). An overflow to inf has no
+            // canonical form, so it is rejected like Infinity (lens.py
+            // `_finite_float`). Underflow to 0.0 is fine.
+            let x: f64 = lexeme.parse().expect("validated float lexeme");
+            if x.is_infinite() {
+                return Err(ParseError::NonJsonConstant);
+            }
+            Ok(Value::Float(x))
         }
     }
 }
@@ -349,6 +359,9 @@ pub fn number_repr(v: &Value) -> Option<String> {
 }
 
 /// Python `json.dumps(v, indent=2, ensure_ascii=False)`, for --json output.
+/// The output is always valid JSON: a non-finite float (which [`parse`] never
+/// produces, but a hand-built `Value` can hold) is written as `null`, not as
+/// Python's bare `Infinity`/`NaN`.
 pub fn to_pretty(v: &Value) -> String {
     let mut out = String::new();
     pretty(&mut out, v, 0);
@@ -360,7 +373,7 @@ fn pretty(out: &mut String, v: &Value, level: usize) {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Int(_) | Value::Float(_) => out.push_str(&number_repr(v).unwrap_or_else(|| "Infinity".into())),
+        Value::Int(_) | Value::Float(_) => out.push_str(&number_repr(v).unwrap_or_else(|| "null".into())),
         Value::Str(s) => write_str(out, s),
         Value::Array(a) if a.is_empty() => out.push_str("[]"),
         Value::Object(o) if o.is_empty() => out.push_str("{}"),
@@ -402,6 +415,10 @@ mod tests {
         assert_eq!(parse("-Infinity"), Err(ParseError::NonJsonConstant));
         assert_eq!(parse(r#""\ud800""#), Err(ParseError::LoneSurrogate));
         assert_eq!(parse(r#""\udc00\ud800""#), Err(ParseError::LoneSurrogate));
+        // A float that overflows to inf is rejected like Infinity, at any depth.
+        for overflow in ["1e400", "-1e400", "1.5E+999", "[1e400]", r#"{"a":{"b":-1e309}}"#] {
+            assert_eq!(parse(overflow), Err(ParseError::NonJsonConstant), "{overflow}");
+        }
         assert!(parse("[1,]").is_err());
         assert!(parse("01").is_err());
         assert!(parse("\u{feff}{}").is_err());
@@ -416,7 +433,25 @@ mod tests {
             Value::Int("123456789012345678901234567890".into())
         );
         assert_eq!(parse(r#""😀""#).unwrap(), Value::Str("\u{1F600}".into()));
-        assert_eq!(parse("1e400").unwrap(), Value::Float(f64::INFINITY));
+        // The float range edges stay readable: f64::MAX, and underflow to zero.
+        assert_eq!(parse("1.7976931348623157e308").unwrap(), Value::Float(f64::MAX));
+        assert_eq!(parse("1e-400").unwrap(), Value::Float(0.0));
+        // An overflowing integer lexeme is an Int, not a float, so it stays readable.
+        let big = format!("1{}", "0".repeat(400));
+        assert_eq!(parse(&big).unwrap(), Value::Int(big));
+    }
+
+    #[test]
+    fn to_pretty_never_writes_bare_infinity() {
+        let v = Value::Object(vec![
+            ("a".into(), Value::Float(f64::INFINITY)),
+            ("b".into(), Value::Float(f64::NEG_INFINITY)),
+            ("c".into(), Value::Float(f64::NAN)),
+            ("d".into(), Value::Float(1.5)),
+        ]);
+        let out = to_pretty(&v);
+        assert_eq!(out, "{\n  \"a\": null,\n  \"b\": null,\n  \"c\": null,\n  \"d\": 1.5\n}");
+        assert!(parse(&out).is_ok());
     }
 
     #[test]

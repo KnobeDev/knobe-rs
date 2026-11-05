@@ -6,7 +6,7 @@ It is published on crates.io as [`knobe`](https://crates.io/crates/knobe), with 
 
 | Upstream | What this crate matches |
 |---|---|
-| `lens.py`, the reference verifier | `state`, `conformance`, `body_verified`, computed and stored hash, block count and exit code, on every published file. On four points it follows the explicit spec text where `lens.py` does not ([below](#where-it-follows-the-spec-text-over-lenspy)). |
+| `lens.py`, the reference verifier | `state`, `conformance`, `body_verified`, computed and stored hash, block count and exit code, on every published file. On two points it follows the explicit spec text where `lens.py` does not ([below](#where-it-follows-the-spec-text-over-lenspy)). |
 | `knobe-core.js` `createKnobe()`, the sealer | Byte for byte, apart from the refusals listed below |
 
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
@@ -75,12 +75,12 @@ It runs entirely locally: no network access, no account, no server.
 
 ## How it is tested
 
-`cargo test` needs `python3` and `node`. It also needs the protocol checkout at `../knobe-protocol`; set `KNOBE_PROTOCOL_DIR` to use a different location.
+`cargo test` needs `python3` and `node`. It also needs a checkout of upstream `main` of the protocol at `../knobe-protocol`; set `KNOBE_PROTOCOL_DIR` to use a different location. The parity tests track upstream `main`, so an older checkout reports differences.
 
 | Test | What it checks |
 |---|---|
 | `tests/vectors.rs` | All 25 published vectors against the expected results in their READMEs |
-| `tests/lens_parity.rs` | Runs `lens.py --json` side by side over every published `.knobe.md` (all must agree) and 113 crafted hostile files, and compares every field the upstream parity gate compares. The hostile files are hashed by an independent Python oracle (`tests/support/pyhash.py`), never by the code under test. 13 of them pin the spec-text cases below with explicit expected results. |
+| `tests/lens_parity.rs` | Runs `lens.py --json` side by side over every published `.knobe.md` (all must agree) and 122 crafted hostile files, and compares every field the upstream parity gate compares. The hostile files are hashed by an independent Python oracle (`tests/support/pyhash.py`), never by the code under test. 8 of them pin the spec-text cases below with explicit expected results. |
 | `tests/seal_parity.rs` | Feeds the same requests to upstream `createKnobe` (Node) and to `create_knobe`, and requires byte-identical files. `lens.py` must then verify every sealed file. |
 | `tests/hostile_scale.rs` | Resource bounds: payloads with 200,000 keys verify in linear time, and 100,000 levels of nesting are rejected cleanly instead of overflowing the stack. |
 
@@ -88,14 +88,14 @@ CI runs against upstream `main` on every push and weekly, so any upstream change
 
 ## Where it follows the spec text over lens.py
 
-The steward's governance says that where reference behavior conflicts with explicit normative text, the text wins. knobe-rs does so on four points. None changes the verdict of any published vector or example. Each is quoted and argued in [docs/INTERPRETATIONS.md](docs/INTERPRETATIONS.md):
+The steward's governance says that where reference behavior conflicts with explicit normative text, the text wins. knobe-rs does so on two points. None changes the verdict of any published vector or example. Each is quoted and argued in [docs/INTERPRETATIONS.md](docs/INTERPRETATIONS.md):
 
 | | Spec text | knobe-rs |
 |---|---|---|
 | I-1 | §3.1: "spec_version MUST appear in the frontmatter" | A frontmatter block without it is `invalid` |
-| I-2 | §4.1: hashes are "exactly 64 lowercase hexadecimal characters" | A hash followed by a newline is `invalid` |
-| I-3 | §3.3: "Line breaks within the Base64 block MUST be ignored" (RFC 4648 §3.3 rejects anything else) | Only CR and LF are ignored; other stray characters make the file `unreadable` |
 | I-4 | §6: the body follows "the second line containing exactly ---" | `---` lines are counted from the start of the file |
+
+Two earlier points are now settled by ERRATA E12, and knobe-rs and `lens.py` agree on both: I-2, a hash followed by a newline is `invalid`; and I-3, a payload block has ASCII space, tab, CR and LF stripped, as both reference engines do. knobe-rs 0.1.0 stripped only CR and LF. E12 says those four characters "may be stripped". The steward's [grounds for the ruling](https://github.com/KnobeOne/knobe-protocol/pull/12#pullrequestreview-5775198306) call divergent verdicts between conforming verifiers a defect, so knobe-rs now strips the same set.
 
 The same document lists every other interpretive choice and what settled it: test vectors, ERRATA rulings, or `lens.py` for serialization questions.
 
@@ -119,7 +119,7 @@ knobe-rs is maintained by Joshua Hori (KnobeDev). It is not an official or refer
 
 It was written with AI assistance (Claude) at the maintainer's direction. As the steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) ask, the reliance on the reference engines is disclosed:
 - **It was first built as a port of `lens.py` and `knobe-core.js`.**
-- **It was then checked clause by clause against the specification text** (§3–§10). That check produced the four spec-text rules above and the interpretation record.
+- **It was then checked clause by clause against the specification text** (§3–§10). That check produced the spec-text rules above and the interpretation record.
 
 The maintainer's own review of each interpretation is tracked by the checkboxes in [docs/INTERPRETATIONS.md](docs/INTERPRETATIONS.md).
 
