@@ -128,6 +128,9 @@ fn split_top_level(s: &str) -> Vec<&str> {
 fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
     let hex = "a".repeat(64);
     let body = "\nHello body.\n";
+    // A body with two `---` horizontal rules, which a verifier that counts
+    // `---` lines from anywhere could take for the frontmatter's delimiters.
+    let rules = "\nIntro.\n\n---\n\nMiddle.\n\n---\n\nEnd.\n";
     let bh = r#""body_hash":"__B__""#;
     let mut c: Vec<(&'static str, Vec<u8>)> = vec![
         ("baseline", knobe(FM, "", &obj(""))),
@@ -333,6 +336,19 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
         ("fm-spec-first-wins", knobe("---\nspec_version: 1.0\nspec_version: 9\n---\n", "", &obj(""))),
         ("fm-spec-after-close-ignored", knobe("---\ntitle: T\n---\nspec_version: 9\n", "", &obj(""))),
         ("fm-spec-not-prefix", knobe("---\nspec_versionx: 9\n---\n", "", &obj(""))),
+        // Proposed ERRATA E13: a quoted key, or a value that is empty or
+        // whitespace once its quotes are stripped, is not a declaration.
+        ("fm-spec-quoted-key", knobe("---\n\"spec_version\": \"1.0\"\n---\n", "", &obj(""))),
+        ("fm-spec-quoted-empty", knobe("---\nspec_version: \"\"\n---\n", "", &obj(""))),
+        ("fm-spec-quoted-whitespace", knobe("---\nspec_version: \" \u{3000} \"\n---\n", "", &obj(""))),
+        // --- where the body starts (proposed ERRATA E14): the opening delimiter is line 1 ---
+        ("fm-preamble-with-body-rules", knobe(&format!("Preamble line.\n{FM}"), rules, &obj(bh))),
+        ("fm-bom-with-body-rules", knobe(&format!("\u{feff}{FM}"), rules, &obj(bh))),
+        ("fm-missing-with-body-rules", knobe("", rules, &obj(bh))),
+        ("fm-blank-first-line-with-body", knobe(&format!("\n{FM}"), body, &obj(bh))),
+        ("fm-closing-double-cr-with-body", knobe("---\nspec_version: 1.0\n---\r\r\n", body, &obj(bh))),
+        // Positive control: rules in the body of a well-formed file are body.
+        ("body-with-two-rules", knobe(FM, rules, &obj(bh))),
         // --- body normalization edges (python whitespace vs line-end rules) ---
         ("body-tabs-and-spaces", knobe(FM, "\n  a \t\n\tb\t \n\n", &obj(bh))),
         ("body-lone-cr", knobe(FM, "\na\rb\r\n", &obj(bh))),
@@ -551,12 +567,14 @@ fn flip_trailing_bits(b: &str) -> String {
 const SPEC_OVER_REFERENCE: &[(&str, &str, &str, Option<&str>, &str)] = &[
     ("fm-crlf-with-body", "I-1", "verified", Some("yes"), "invalid"),
     ("fm-double-cr", "I-1", "verified", Some("omitted"), "invalid"),
-    ("fm-double-cr-with-body", "I-1, I-4", "verified", Some("yes"), "invalid"),
     ("fm-bom", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-spec-whitespace-only", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-spec-empty", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-spec-after-close-ignored", "I-1", "verified", Some("omitted"), "invalid"),
     ("fm-spec-not-prefix", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-quoted-key", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-quoted-empty", "I-1", "verified", Some("omitted"), "invalid"),
+    ("fm-spec-quoted-whitespace", "I-1", "verified", Some("omitted"), "invalid"),
 ];
 
 /// Cases where knobe-rs prints what lens.py prints once it has the display
@@ -595,7 +613,7 @@ fn write_hostile_files(dir: &str) -> Vec<(&'static str, PathBuf)> {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(dir);
     std::fs::create_dir_all(&dir).unwrap();
     let cases = hostile_cases();
-    assert_eq!(cases.len(), 202, "update the README if the battery size changes");
+    assert_eq!(cases.len(), 211, "update the README if the battery size changes");
     eprintln!("python3 is {}; lens.py display patch: {}", common::python_version(), common::lens_has_display_patch());
     cases
         .into_iter()
@@ -679,8 +697,7 @@ fn full_json_output_is_byte_identical_to_lens_py() {
         }
         match SPEC_OVER_REFERENCE.iter().find(|c| c.0 == name.as_str()) {
             Some((_, rule, ..)) if same => diffs.push(format!("{name} ({rule}): lens.py now agrees")),
-            // I-1 changes only conformance. I-4 moves the body, so its whole
-            // result differs; the gate battery pins that result.
+            // I-1 changes only conformance; the gate battery pins the result.
             Some((_, rule, ..)) if *rule == "I-1" && without_conformance(&py) != without_conformance(&rs) => {
                 diffs.push(format!("{name} ({rule}): differs beyond conformance"))
             }

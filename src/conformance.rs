@@ -2,7 +2,7 @@
 //! a file `invalid`; soft deviations make it `warnings`.
 
 use crate::json::Value;
-use crate::pyfmt::{repr, repr_str, type_name};
+use crate::pyfmt::{py_strip, repr, repr_str, type_name};
 use crate::verify::{Conformance, Frontmatter};
 
 /// Required fields that MUST be JSON strings (spec §4).
@@ -117,15 +117,19 @@ pub fn check(payload: &Value, missing: &[String], fm: &Frontmatter, block_count:
 
 /// Frontmatter must exist and declare spec_version (§3.1 "At minimum,
 /// spec_version MUST appear in the frontmatter"; §10). lens.py checks only
-/// that it exists (docs/INTERPRETATIONS.md, I-1). A declared value that
-/// disagrees with the payload is a warning (ERRATA E5).
+/// that it exists (docs/INTERPRETATIONS.md, I-1); proposed ERRATA E13
+/// (KnobeOne/knobe-protocol#22) adds this check to the reference engines.
+/// A value that is empty or Python whitespace once its quotes are stripped
+/// (`spec_version: "  "`) is not a declaration: it gets this one issue, with
+/// no E5 warning on top, as in knobe-go. A declared value that disagrees with
+/// the payload is a warning (ERRATA E5).
 fn check_frontmatter(payload: &Value, fm: &Frontmatter, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     if !fm.ok {
         errors.push(format!("YAML frontmatter missing or malformed: {}", fm.reason));
         return;
     }
-    match (fm.spec.as_deref(), payload.get("spec_version")) {
-        (None | Some(""), _) => errors.push("YAML frontmatter does not declare spec_version (spec §3.1)".into()),
+    match (fm.spec.as_deref().filter(|s| !py_strip(s).is_empty()), payload.get("spec_version")) {
+        (None, _) => errors.push("YAML frontmatter does not declare spec_version (spec §3.1)".into()),
         (Some(fs), Some(Value::Str(ps))) if fs != ps => {
             warnings.push(format!(
                 "frontmatter spec_version {} does not match sealed payload spec_version {}",
