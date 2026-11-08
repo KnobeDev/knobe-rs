@@ -26,50 +26,104 @@ const CORE_NINE: &[&str] = &[
 ];
 
 /// One row of a published expected-results table. `file` is relative to
-/// test-vectors/, with forward slashes. `body` is None where the table has no
-/// body_verified column (the core nine), and Some("—") for the omitted that
+/// test-vectors/, with forward slashes. `body` is "—" for the omitted that
 /// unreadable files report.
 struct Expectation {
     file: String,
     status: String,
-    body: Option<String>,
+    body: String,
     conformance: String,
 }
 
+/// The cells of a Markdown table row, split on unescaped pipes, or None for
+/// a line that is not a table row.
+fn table_cells(line: &str) -> Option<Vec<&str>> {
+    let row = line.trim().strip_prefix('|')?;
+    let mut cells = Vec::new();
+    let (mut start, mut escaped) = (0, false);
+    for (i, c) in row.char_indices() {
+        match c {
+            // The character after a backslash is literal, `\|` included.
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '|' => {
+                cells.push(row[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = row[start..].trim();
+    if !last.is_empty() {
+        cells.push(last); // a row without a closing pipe
+    }
+    Some(cells)
+}
+
+/// The index of the header cell `name` or `expected <name>` (case-insensitive).
+fn column(header: &[&str], name: &str) -> Option<usize> {
+    header.iter().position(|h| {
+        let h = h.to_ascii_lowercase();
+        h == name || h.strip_prefix("expected ") == Some(name)
+    })
+}
+
+/// Every row that names a `.knobe.md` file, from each table in the three
+/// READMEs. The status, body_verified and conformance columns are found by
+/// their header, which every table has had since knobe-protocol PR #30
+/// (8d664d3). A table starts at its header row (a first cell of `file`, or
+/// the first row after a non-table line) and ends at the next non-table line
+/// or header row.
 fn published_expected(vectors: &Path) -> Vec<Expectation> {
     let mut out = Vec::new();
-    for (dir, has_body) in [("", false), ("adversarial", true), ("interpretation", true)] {
+    for dir in ["", "adversarial", "interpretation"] {
         let readme = vectors.join(dir).join("README.md");
         let text = std::fs::read_to_string(&readme).unwrap_or_else(|e| panic!("{}: {e}", readme.display()));
+        let mut header: Option<Vec<&str>> = None;
         for line in text.lines() {
-            let Some((file, rest)) = line.strip_prefix("| `").and_then(|r| r.split_once('`')) else {
+            let Some(cells) = table_cells(line) else {
+                header = None;
                 continue;
             };
-            if !file.ends_with(".knobe.md") {
-                continue;
-            }
-            // "verified (last block)" and "valid (where readable)" keep the first word.
-            let cells: Vec<&str> = rest.split('|').skip(1).map(|c| c.split_whitespace().next().unwrap_or("")).collect();
-            let file = if dir.is_empty() { file.to_string() } else { format!("{dir}/{file}") };
-            let row = match (has_body, cells.as_slice()) {
-                (true, [status, body, conformance, ..]) => Expectation {
-                    file,
-                    status: status.to_string(),
-                    body: Some(body.to_string()),
-                    conformance: conformance.to_string(),
-                },
-                (false, [status, conformance, ..]) => {
-                    Expectation { file, status: status.to_string(), body: None, conformance: conformance.to_string() }
+            let is_header = cells.first().is_some_and(|c| c.eq_ignore_ascii_case("file"));
+            let head = match &header {
+                Some(head) if !is_header => head,
+                _ => {
+                    header = Some(cells);
+                    continue;
                 }
-                _ => panic!("{}: cannot read the expected-results row {line:?}", readme.display()),
             };
-            let blank_body = row.body.as_deref().is_some_and(str::is_empty);
+            let Some(file) =
+                cells.first().and_then(|c| c.strip_prefix('`')?.strip_suffix('`')).filter(|f| f.ends_with(".knobe.md"))
+            else {
+                continue; // the separator row, or a row that names no vector
+            };
             assert!(
-                !row.status.is_empty() && !row.conformance.is_empty() && !blank_body,
-                "{}: blank cell in the expected-results row {line:?}",
-                readme.display()
+                cells.len() == head.len(),
+                "{}: row has {} cells, header {}: {line:?}",
+                readme.display(),
+                cells.len(),
+                head.len()
             );
-            out.push(row);
+            let at = |name: &str| {
+                let i = column(head, name).unwrap_or_else(|| {
+                    panic!(
+                        "{}: the table listing {file} has no {name} column (upstream added body_verified \
+                         to every table in PR #30; use a checkout at 8d664d3 or later)",
+                        readme.display()
+                    )
+                });
+                // "verified (last block)" and "valid (where readable)" keep the first word.
+                let cell = cells[i].split_whitespace().next().unwrap_or("");
+                assert!(!cell.is_empty(), "{}: blank {name} cell in the row {line:?}", readme.display());
+                cell.to_string()
+            };
+            out.push(Expectation {
+                file: if dir.is_empty() { file.to_string() } else { format!("{dir}/{file}") },
+                status: at("status"),
+                body: at("body_verified"),
+                conformance: at("conformance"),
+            });
         }
     }
     out
@@ -105,10 +159,9 @@ fn every_published_vector_matches_its_expected_result() {
         }
         let r = verify_path(&path);
         let got_body = r.body_verified.map(|b| b.as_str());
-        let body_ok = match want.body.as_deref() {
-            None => true,
-            Some("—") => got_body.is_none(),
-            Some(b) => got_body == Some(b),
+        let body_ok = match want.body.as_str() {
+            "—" => got_body.is_none(),
+            b => got_body == Some(b),
         };
         if r.state.as_str() != want.status || r.conformance.as_str() != want.conformance || !body_ok {
             failures.push(format!(
