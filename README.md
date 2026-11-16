@@ -82,7 +82,7 @@ It runs entirely locally: no network access, no account, no server.
 | Test | What it checks |
 |---|---|
 | `tests/vectors.rs` | Every published vector (33 at upstream `4f66885`) against the expected status, body_verified and conformance in its README table, and fails on a vector with no row. The columns are found by their headers, which needs a checkout at `8d664d3` or later. |
-| `tests/lens_parity.rs` | Runs `lens.py` side by side with the built `knobe` command over every published `.knobe.md`, 202 crafted hostile files and 7 hostile file names. The complete `--json` output and the human report must be byte-identical, with the same exit code. The hostile files are hashed by an independent Python oracle (`tests/support/pyhash.py`), never by the code under test. 8 of them pin the spec-text cases below with explicit expected results. |
+| `tests/lens_parity.rs` | Runs `lens.py` side by side with the built `knobe` command over every published `.knobe.md`, 211 crafted hostile files and 7 hostile file names. The complete `--json` output and the human report must be byte-identical, with the same exit code. The hostile files are hashed by an independent Python oracle (`tests/support/pyhash.py`), never by the code under test. 10 of them pin the spec-text case below with explicit expected results. |
 | `tests/seal_parity.rs` | Feeds the same requests to upstream `createKnobe` (Node) and to `create_knobe`, and requires byte-identical files. `lens.py` must then verify every sealed file. Requests `createKnobe` refuses for an unassigned code point must be refused here for the same code point. Every Unicode code point is then put to upstream `seal` and to `knobe::seal`, one at a time, and the two must refuse the same ones, allowing only for a difference in Unicode version ([Sealer refusals](#sealer-refusals)). |
 | `tests/hostile_scale.rs` | Resource bounds: payloads with 200,000 keys verify in linear time, 100,000 levels of nesting are rejected cleanly, and the deepest payload `lens.py` accepts verifies on a thread with Rust's default 2 MB stack. |
 
@@ -92,12 +92,15 @@ Until upstream merges the display fixes ([Display](#display)), 20 cases are expe
 
 ## Where it follows the spec text over lens.py
 
-The steward's governance says that where reference behavior conflicts with explicit normative text, the text wins. knobe-rs does so on two points. None changes the verdict of any published vector or example. Each is quoted and argued in [docs/INTERPRETATIONS.md](docs/INTERPRETATIONS.md):
+The steward's governance says that where reference behavior conflicts with explicit normative text, the text wins. knobe-rs does so on one point, which changes the verdict of no published vector or example. It is quoted and argued in [docs/INTERPRETATIONS.md](docs/INTERPRETATIONS.md):
 
 | | Spec text | knobe-rs |
 |---|---|---|
 | I-1 | §3.1: "spec_version MUST appear in the frontmatter" | A frontmatter block without it is `invalid` |
-| I-4 | §6: the body follows "the second line containing exactly ---" | `---` lines are counted from the start of the file |
+
+I-1 is proposed as ERRATA E13 in [#22](https://github.com/KnobeOne/knobe-protocol/issues/22). The steward has agreed in substance, and the reference engines and knobe-go are to add the same check. The ruling is due no earlier than 2026-11-20.
+
+I-4 is retired. knobe-rs 0.1.2 counted `---` lines from the start of the file to find the body. It now requires the opening `---` on line 1, as `lens.py`, `knobe-core.js` and knobe-go do, following the direction the steward agreed for proposed ERRATA E14 in the same issue ([Unreleased](#unreleased)).
 
 Two earlier points are now settled by ERRATA E12, and knobe-rs and `lens.py` agree on both: I-2, a hash followed by a newline is `invalid`; and I-3, a payload block has ASCII space, tab, CR and LF stripped, as both reference engines do. knobe-rs 0.1.0 stripped only CR and LF. E12 says those four characters "may be stripped". The steward's [grounds for the ruling](https://github.com/KnobeOne/knobe-protocol/pull/12#pullrequestreview-5775198306) call divergent verdicts between conforming verifiers a defect, so knobe-rs now strips the same set.
 
@@ -134,8 +137,21 @@ No published file's output changes under these rules. Until upstream merges them
 
 ## Unreleased
 
+Proposed ERRATA E13 and E14 ([#22](https://github.com/KnobeOne/knobe-protocol/issues/22)) are open for comment until 2026-11-20 at the earliest.
+
+- **Where the body starts (proposed ERRATA E14).** The opening `---` must be line 1, as in `lens.py`, `knobe-core.js` and knobe-go. 0.1.2 counted `---` lines from anywhere in the file, so when line 1 was something else it could take a horizontal rule in the body for the frontmatter's closing line. Now, if line 1 is not exactly `---` (ending in LF or CRLF) and the payload seals a `body_hash`, the file is `unreadable` (exit 2). Files without a `body_hash` are unaffected. On the steward's seed example, which has `---` rules in its body:
+
+  | `examples/knobe-seed-v1.0.knobe.md`, edited to have | 0.1.2 | now, as `lens.py` |
+  |---|---|---|
+  | a UTF-8 byte-order mark before line 1 | verified-body-modified · modified · valid (exit 0) | unreadable · — · invalid (exit 2) |
+  | a line of text before line 1 | verified · yes · invalid (exit 1) | unreadable · — · invalid (exit 2) |
+  | its frontmatter removed | verified-body-modified · modified · invalid (exit 1) | unreadable · — · invalid (exit 2) |
+  | `---\r\r` as line 1 | verified · yes · valid (exit 0) | unreadable · — · invalid (exit 2) |
+
+  The first row was a false report: the body is unmodified. The last row was right, and is now `unreadable` along with every reference engine. Whether verifiers should tolerate a leading BOM and extra CRs on line 1 is a separate open question on #22. If it is ruled that way, the first and last rows become verified · yes · valid in every engine.
+- **`spec_version` in the frontmatter (proposed ERRATA E13).** knobe-rs already reported a frontmatter without it as `invalid`, and the reference engines are to add the same check. One detail the steward asked the ruling to pin was missing: a value that is only whitespace once its quotes are stripped, such as `spec_version: "  "`, is not a declaration. 0.1.2 counted it as declared and gave an E5 warning (`warnings`, exit 0), as `lens.py` does today. It is now `invalid` with the one issue, as in knobe-go. Quotes around the value are still stripped, and a quoted key still does not count.
 - **The sealer refuses unassigned code points**, as upstream `createKnobe` has since [PR #34](https://github.com/KnobeOne/knobe-protocol/pull/34). 0.1.2 sealed them. The refusal is `SealError::UnassignedCodePoint`, and `knobe::UNICODE_VERSION` gives the Unicode version it is judged by ([Sealer refusals](#sealer-refusals)).
-- **Tests.** Upstream PR #30 added a body_verified column to the core vectors table. The vectors test read the columns by position, so it compared the wrong cells for the nine core vectors and failed. The verifier did not change: 0.1.2 reproduces all 33 vectors. The test now finds each table's columns by their headers and checks body_verified for every vector. The sealer tests compare refusals as well as sealed files.
+- **Tests.** Upstream PR #30 added a body_verified column to the core vectors table. The vectors test read the columns by position, so it compared the wrong cells for the nine core vectors and failed. That needed no change to the verifier: 0.1.2 reproduces all 33 vectors. The test now finds each table's columns by their headers and checks body_verified for every vector. The sealer tests compare refusals as well as sealed files. Nine new hostile cases: six cover where the body starts, two of them controls that verify, and three cover E13's details (a quoted key, a quoted empty value and a quoted whitespace value).
 
 ## Changes in 0.1.2
 
