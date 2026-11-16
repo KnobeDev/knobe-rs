@@ -1,13 +1,15 @@
 # knobe-rs: a KNOBE verifier for Rust
 
-A conformant **KNOBE Protocol v1** verifier, plus a sealer, written in Rust and maintained by KnobeDev. It reproduces every published test vector of [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol): the nine conformance vectors, the ten adversarial vectors and the six interpretation vectors.
+A conformant **KNOBE Protocol v1** verifier, plus a sealer, written in Rust and maintained by KnobeDev. It reproduces every published test vector of [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol): 33 at upstream commit `4f66885` of 15 November 2026 (9 conformance, 17 adversarial and 7 interpretation).
+
+The steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) keep *conformant* for a verifier that reproduces every published test vector. The `parity` check runs this crate's tests against upstream `main` on every push and every week, so the claim holds for the current set while that check passes. The check failed from 9 November 2026 until the tests were brought up to date ([Unreleased](#unreleased)).
 
 It is published on crates.io as [`knobe`](https://crates.io/crates/knobe), with API documentation on [docs.rs](https://docs.rs/knobe).
 
 | Upstream | What this crate matches |
 |---|---|
 | `lens.py`, the reference verifier | The complete `--json` report and the human report, byte for byte, with the same exit code, on every published file, 202 crafted hostile files and 7 hostile file names. The exceptions are documented: two points where it follows the explicit spec text ([below](#where-it-follows-the-spec-text-over-lenspy)), and the display fixes proposed upstream ([Display](#display)). |
-| `knobe-core.js` `createKnobe()`, the sealer | Byte for byte, apart from the refusals listed below |
+| `knobe-core.js` `createKnobe()`, the sealer | Byte for byte, and it refuses unassigned code points as `createKnobe` does. It also refuses some inputs `createKnobe` accepts ([Sealer refusals](#sealer-refusals)). |
 
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
 
@@ -79,9 +81,9 @@ It runs entirely locally: no network access, no account, no server.
 
 | Test | What it checks |
 |---|---|
-| `tests/vectors.rs` | Every published vector (33 at upstream `8d664d3`) against the expected status, body_verified and conformance in its README table, and fails on a vector with no row. The columns are found by their headers, which needs a checkout at `8d664d3` or later. |
+| `tests/vectors.rs` | Every published vector (33 at upstream `4f66885`) against the expected status, body_verified and conformance in its README table, and fails on a vector with no row. The columns are found by their headers, which needs a checkout at `8d664d3` or later. |
 | `tests/lens_parity.rs` | Runs `lens.py` side by side with the built `knobe` command over every published `.knobe.md`, 211 crafted hostile files and 7 hostile file names. The complete `--json` output and the human report must be byte-identical, with the same exit code. The hostile files are hashed by an independent Python oracle (`tests/support/pyhash.py`), never by the code under test. 10 of them pin the spec-text case below with explicit expected results. |
-| `tests/seal_parity.rs` | Feeds the same requests to upstream `createKnobe` (Node) and to `create_knobe`, and requires byte-identical files. `lens.py` must then verify every sealed file. |
+| `tests/seal_parity.rs` | Feeds the same requests to upstream `createKnobe` (Node) and to `create_knobe`, and requires byte-identical files. `lens.py` must then verify every sealed file. Requests `createKnobe` refuses for an unassigned code point must be refused here for the same code point. Every Unicode code point is then put to upstream `seal` and to `knobe::seal`, one at a time, and the two must refuse the same ones, allowing only for a difference in Unicode version ([Sealer refusals](#sealer-refusals)). |
 | `tests/hostile_scale.rs` | Resource bounds: payloads with 200,000 keys verify in linear time, 100,000 levels of nesting are rejected cleanly, and the deepest payload `lens.py` accepts verifies on a thread with Rust's default 2 MB stack. |
 
 CI runs against upstream `main` with Python 3.13 on every push and weekly, so any upstream change that affects parity shows up immediately. Sixteen hostile cases depend on CPython 3.13's `json.loads` nesting limits (3.12 stops one level earlier); with another Python they are skipped, with a note.
@@ -148,7 +150,8 @@ Proposed ERRATA E13 and E14 ([#22](https://github.com/KnobeOne/knobe-protocol/is
 
   The first row was a false report: the body is unmodified. The last row was right, and is now `unreadable` along with every reference engine. Whether verifiers should tolerate a leading BOM and extra CRs on line 1 is a separate open question on #22. If it is ruled that way, the first and last rows become verified · yes · valid in every engine.
 - **`spec_version` in the frontmatter (proposed ERRATA E13).** knobe-rs already reported a frontmatter without it as `invalid`, and the reference engines are to add the same check. One detail the steward asked the ruling to pin was missing: a value that is only whitespace once its quotes are stripped, such as `spec_version: "  "`, is not a declaration. 0.1.2 counted it as declared and gave an E5 warning (`warnings`, exit 0), as `lens.py` does today. It is now `invalid` with the one issue, as in knobe-go. Quotes around the value are still stripped, and a quoted key still does not count.
-- **Tests.** Upstream PR #30 added a body_verified column to the core vectors table, so the vectors test now finds each table's columns by their headers and checks body_verified for all 33 published vectors. It needs a checkout at `8d664d3` or later. Nine new hostile cases: six cover where the body starts, two of them controls that verify, and three cover E13's details (a quoted key, a quoted empty value and a quoted whitespace value).
+- **The sealer refuses unassigned code points**, as upstream `createKnobe` has since [PR #34](https://github.com/KnobeOne/knobe-protocol/pull/34). 0.1.2 sealed them. The refusal is `SealError::UnassignedCodePoint`, and `knobe::UNICODE_VERSION` gives the Unicode version it is judged by ([Sealer refusals](#sealer-refusals)).
+- **Tests.** Upstream PR #30 added a body_verified column to the core vectors table. The vectors test read the columns by position, so it compared the wrong cells for the nine core vectors and failed. That needed no change to the verifier: 0.1.2 reproduces all 33 vectors. The test now finds each table's columns by their headers and checks body_verified for every vector. The sealer tests compare refusals as well as sealed files. Nine new hostile cases: six cover where the body starts, two of them controls that verify, and three cover E13's details (a quoted key, a quoted empty value and a quoted whitespace value).
 
 ## Changes in 0.1.2
 
@@ -166,7 +169,11 @@ Proposed ERRATA E13 and E14 ([#22](https://github.com/KnobeOne/knobe-protocol/is
 
 ## Sealer refusals
 
-The sealer refuses a few inputs rather than emit a file that would lose information or not fully verify:
+**Shared with `createKnobe`: unassigned code points.** `knobe seal` refuses a payload key or string that contains a code point with no character assigned to it, and names the code point: `the text contains U+FFFF, a character this software's Unicode version (18.0.0) does not recognize`. `createKnobe` has refused the same since upstream [PR #34](https://github.com/KnobeOne/knobe-protocol/pull/34). The payload hash is taken over NFC-normalized text, and the NFC form of an unassigned code point can change when a later Unicode version assigns it, so two verifiers could compute different hashes for the same file ([issue #33](https://github.com/KnobeOne/knobe-protocol/issues/33)). Private-use code points are assigned and are sealed. The body is not checked, here or in `createKnobe`: it is hashed without NFC.
+
+Each engine judges "unassigned" by its own Unicode tables. This crate's are Unicode 18.0 (`knobe::UNICODE_VERSION`), from the `unicode-normalization` crate it normalizes with. With Node 24.14, whose tables are Unicode 17.0, `createKnobe` refuses 13,007 code points that `knobe seal` accepts: the 13,007 characters Unicode 18.0 added. A JavaScript engine with Unicode 18 tables accepts them too. Nothing else differs between the two. The tests seal one file that holds every one of those code points, and `lens.py` (Python 3.13, Unicode 15.1) and `knobe-core.js` both verify it.
+
+**Beyond `createKnobe`.** The sealer also refuses a few inputs `createKnobe` accepts, rather than emit a file that would lose information or not fully verify:
 
 | Input | `knobe seal` |
 |---|---|

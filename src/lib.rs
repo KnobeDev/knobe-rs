@@ -16,7 +16,7 @@ mod conformance;
 mod pyprintable;
 
 pub use json::Value;
-pub use seal::{CreateOptions, Created, SealError, create_knobe, seal};
+pub use seal::{CreateOptions, Created, SealError, UNICODE_VERSION, create_knobe, seal};
 pub use verify::{Report, verify_bytes, verify_path};
 
 /// Spec versions this implementation can honestly verify.
