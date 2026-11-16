@@ -1,6 +1,8 @@
 # knobe-rs: a KNOBE verifier for Rust
 
-A conformant **KNOBE Protocol v1** verifier, plus a sealer, written in Rust and maintained by KnobeDev. It reproduces every published test vector of [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol): the nine conformance vectors, the ten adversarial vectors and the six interpretation vectors.
+A KNOBE-compatible verifier and sealer for **KNOBE Protocol v1**, written in Rust and maintained by KnobeDev.
+
+It does not claim conformance at present. [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol) publishes 33 test vectors (9 conformance, 17 adversarial and 7 interpretation), and this crate's tests do not pass against that set: CI last passed on 6 November 2026 and has failed against upstream `main` since 9 November 2026. The steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) keep *conformant* for a verifier that reproduces every published test vector, so this README will say it again when the tests pass against the current set.
 
 It is published on crates.io as [`knobe`](https://crates.io/crates/knobe), with API documentation on [docs.rs](https://docs.rs/knobe).
 
@@ -79,12 +81,12 @@ It runs entirely locally: no network access, no account, no server.
 
 | Test | What it checks |
 |---|---|
-| `tests/vectors.rs` | All 25 published vectors against the expected results in their READMEs |
+| `tests/vectors.rs` | Every published vector in the protocol checkout against the expected results in the README tables. It fails against upstream `main` at present. |
 | `tests/lens_parity.rs` | Runs `lens.py` side by side with the built `knobe` command over every published `.knobe.md`, 202 crafted hostile files and 7 hostile file names. The complete `--json` output and the human report must be byte-identical, with the same exit code. The hostile files are hashed by an independent Python oracle (`tests/support/pyhash.py`), never by the code under test. 8 of them pin the spec-text cases below with explicit expected results. |
 | `tests/seal_parity.rs` | Feeds the same requests to upstream `createKnobe` (Node) and to `create_knobe`, and requires byte-identical files. `lens.py` must then verify every sealed file. |
 | `tests/hostile_scale.rs` | Resource bounds: payloads with 200,000 keys verify in linear time, 100,000 levels of nesting are rejected cleanly, and the deepest payload `lens.py` accepts verifies on a thread with Rust's default 2 MB stack. |
 
-CI runs against upstream `main` with Python 3.13 on every push and weekly, so any upstream change that affects parity shows up immediately. Sixteen hostile cases depend on CPython 3.13's `json.loads` nesting limits (3.12 stops one level earlier); with another Python they are skipped, with a note.
+CI runs against upstream `main` with Python 3.13 on every push and weekly, so any upstream change that affects parity shows up immediately. That is how the current failure surfaced. Sixteen hostile cases depend on CPython 3.13's `json.loads` nesting limits (3.12 stops one level earlier); with another Python they are skipped, with a note.
 
 Until upstream merges the display fixes ([Display](#display)), 20 cases are expected to differ from `lens.py`, and the tests require that they still do. The tests detect a `lens.py` that has the fixes; against it, every case must match. To run them that way, point `KNOBE_PROTOCOL_DIR` at a checkout with the patch series applied.
 
