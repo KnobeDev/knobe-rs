@@ -2,7 +2,7 @@
 
 A conformant **KNOBE Protocol v1** verifier, plus a sealer, written in Rust and maintained by KnobeDev. It reproduces every published test vector of [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol): 33 at upstream commit `4f66885` of 15 November 2026 (9 conformance, 17 adversarial and 7 interpretation).
 
-The steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) keep *conformant* for a verifier that reproduces every published test vector. The `parity` check runs this crate's tests against upstream `main` on every push and every week, so the claim holds for the current set while that check passes. The check failed from 9 November 2026 until the tests were brought up to date ([Unreleased](#unreleased)).
+The steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) keep *conformant* for a verifier that reproduces every published test vector. The `parity` check runs this crate's tests against upstream `main` on every push and every week, so the claim holds for the current set while that check passes. The check failed from 9 November 2026 until the tests were brought up to date ([Changes in 0.2.0](#changes-in-020)).
 
 It is published on crates.io as [`knobe`](https://crates.io/crates/knobe), with API documentation on [docs.rs](https://docs.rs/knobe).
 
@@ -132,10 +132,13 @@ Every KNOBE verifier escapes text taken from a file before showing it, so that a
 
 No published file's output changes under these rules. Until upstream merges them, `lens.py` differs from knobe-rs on such input: it crashes on an unpaired surrogate in a duplicate key, or on a missing file whose name is not UTF-8, and prints the rest raw.
 
-## Unreleased
+## Changes in 0.2.0
+
+0.2.0 brings the sealer and the tests up to date with upstream `main` at `4f66885`. The verifier is the same as in 0.1.2. The version is 0.2.0 and not 0.1.3 because `SealError` has a new variant, so code that matches on every variant needs a new arm.
 
 - **The sealer refuses unassigned code points**, as upstream `createKnobe` has since [PR #34](https://github.com/KnobeOne/knobe-protocol/pull/34). 0.1.2 sealed them. The refusal is `SealError::UnassignedCodePoint`, and `knobe::UNICODE_VERSION` gives the Unicode version it is judged by ([Sealer refusals](#sealer-refusals)).
 - **Tests.** Upstream PR #30 added a body_verified column to the core vectors table. The vectors test read the columns by position, so it compared the wrong cells for the nine core vectors and failed. The verifier did not change: 0.1.2 reproduces all 33 vectors. The test now finds each table's columns by their headers and checks body_verified for every vector. The sealer tests compare refusals as well as sealed files.
+- **Provenance.** The README and `NOTICE` no longer call knobe-rs independent, which is a defined term in the protocol's governance ([Provenance](#provenance)).
 
 ## Changes in 0.1.2
 
