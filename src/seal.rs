@@ -1,7 +1,14 @@
 //! The sealer: a port of knobe-core.js `seal()` / `createKnobe()`. For any
 //! input createKnobe accepts and emits a self-consistent file from, the output
-//! here is byte-identical. Rather than emit a file that would lose
-//! information or not fully verify, this refuses:
+//! here is byte-identical.
+//!
+//! As createKnobe does, it refuses a payload key or string with a code point
+//! that is unassigned in its own Unicode tables ([`UNICODE_VERSION`]). NFC of
+//! such a code point can change in a later Unicode version, so verifiers
+//! could disagree about the payload hash.
+//!
+//! Rather than emit a file that would lose information or not fully verify,
+//! it also refuses what createKnobe accepts:
 //!
 //! * integers beyond ±(2^53−1), which a JavaScript number cannot hold exactly,
 //! * object keys that collide under NFC,
@@ -13,6 +20,8 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use unicode_normalization::char::is_public_assigned;
 
 use crate::b64;
 use crate::canon::{NonFinite, body_hash, canonical, nfc, sha256_hex};
@@ -41,21 +50,40 @@ pub struct Created {
     pub report: Report,
 }
 
+/// The Unicode version of the tables this crate normalizes with. The sealer
+/// refuses code points that are unassigned in this version.
+pub const UNICODE_VERSION: (u8, u8, u8) = unicode_normalization::UNICODE_VERSION;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SealError {
     FieldsNotObject,
+    /// A payload key or string contains this code point, which is unassigned
+    /// in [`UNICODE_VERSION`].
+    UnassignedCodePoint(char),
     UnsafeInteger(String),
     NonFiniteNumber,
     NfcKeyCollision(String),
     NotAString(&'static str),
     LineBreakInFrontmatter(&'static str),
-    SelfCheckFailed { state: &'static str, body: Option<&'static str>, conformance: &'static str, issues: Vec<String> },
+    SelfCheckFailed {
+        state: &'static str,
+        body: Option<&'static str>,
+        conformance: &'static str,
+        issues: Vec<String>,
+    },
 }
 
 impl fmt::Display for SealError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SealError::FieldsNotObject => write!(f, "fields must be a JSON object"),
+            SealError::UnassignedCodePoint(c) => write!(
+                f,
+                "the text contains U+{:04X}, a character this software's Unicode version ({}.{}.{}) does not \
+                 recognize, so verifiers could disagree about its seal. Remove it, or use a newer version of \
+                 this software.",
+                *c as u32, UNICODE_VERSION.0, UNICODE_VERSION.1, UNICODE_VERSION.2
+            ),
             SealError::UnsafeInteger(n) => write!(
                 f,
                 "integer {n} is beyond ±(2^53−1) and would lose digits; write it as a string (spec §5 wants strings anyway)"
@@ -103,22 +131,43 @@ fn js_number_string(v: &Value) -> Result<String, SealError> {
     }
 }
 
+/// General_Category Private_Use (Co). These three ranges are fixed by
+/// Unicode's stability policy.
+fn is_private_use(c: char) -> bool {
+    matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
+}
+
+/// knobe-core.js `assertAssigned`: refuse a string with a code point that is
+/// unassigned (General_Category Cn, JavaScript `/\p{Cn}/u`) in this crate's
+/// Unicode tables, naming the first one. Noncharacters are unassigned;
+/// private-use code points are not.
+fn assert_assigned(s: &str) -> Result<&str, SealError> {
+    match s.chars().find(|&c| !is_public_assigned(c) && !is_private_use(c)) {
+        Some(c) => Err(SealError::UnassignedCodePoint(c)),
+        None => Ok(s),
+    }
+}
+
 /// knobe-core.js `normalizePayloadForAuthoring`: NFC keys and strings,
-/// numbers to strings (spec §5).
+/// numbers to strings (spec §5), refusing unassigned code points. As there,
+/// an object entry's value is checked before its key. Entries are visited in
+/// the order given; JavaScript visits keys that look like array indexes
+/// first, so with several offending strings it can name a different one.
 fn normalize_for_authoring(v: &Value) -> Result<Value, SealError> {
     Ok(match v {
-        Value::Str(s) => Value::Str(nfc(s)),
+        Value::Str(s) => Value::Str(nfc(assert_assigned(s)?)),
         Value::Int(_) | Value::Float(_) => Value::Str(js_number_string(v)?),
         Value::Array(a) => Value::Array(a.iter().map(normalize_for_authoring).collect::<Result<_, _>>()?),
         Value::Object(o) => {
             let mut out: Vec<(String, Value)> = Vec::with_capacity(o.len());
             let mut seen: HashSet<String> = HashSet::with_capacity(o.len());
             for (k, item) in o {
-                let nk = nfc(k);
+                let value = normalize_for_authoring(item)?;
+                let nk = nfc(assert_assigned(k)?);
                 if !seen.insert(nk.clone()) {
                     return Err(SealError::NfcKeyCollision(nk));
                 }
-                out.push((nk, normalize_for_authoring(item)?));
+                out.push((nk, value));
             }
             Value::Object(out)
         }
@@ -263,6 +312,39 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(19_782), (2024, 2, 29));
         assert_eq!(civil_from_days(20_759), (2026, 11, 2));
+    }
+
+    #[test]
+    fn unassigned_code_points_are_refused_and_private_use_is_not() {
+        // Noncharacters and a reserved code point: General_Category Cn.
+        for c in ['\u{0378}', '\u{FDD0}', '\u{FFFE}', '\u{FFFF}', '\u{1FFFE}', '\u{E0000}', '\u{10FFFF}'] {
+            let s = format!("ok {c} ok");
+            assert_eq!(assert_assigned(&s), Err(SealError::UnassignedCodePoint(c)), "U+{:04X}", c as u32);
+        }
+        // Controls (Cc), format characters (Cf) and private use (Co) are assigned.
+        let assigned = "\0\u{7F}\u{85}\u{200D}\u{FEFF}\u{FFFD}\u{E000}\u{F8FF}\u{F0000}\u{FFFFD}\u{100000}\u{10FFFD}";
+        assert_eq!(assert_assigned(assigned), Ok(assigned));
+        assert_eq!(assert_assigned("caf\u{E9} \u{1F600} \u{4E2D}"), Ok("caf\u{E9} \u{1F600} \u{4E2D}"));
+        assert_eq!(assert_assigned(""), Ok(""));
+    }
+
+    #[test]
+    fn the_first_unassigned_code_point_is_named_value_before_key() {
+        let seal_err = |json: &str| seal(&crate::json::parse(json).unwrap()).unwrap_err();
+        assert_eq!(seal_err("{\"a\":\"x\u{FDD1}\u{FDD0}\"}"), SealError::UnassignedCodePoint('\u{FDD1}'));
+        assert_eq!(seal_err("{\"\u{FDD1}\":\"\u{FDD2}\"}"), SealError::UnassignedCodePoint('\u{FDD2}'));
+        assert_eq!(seal_err("{\"a\":[{\"\u{FFFF}\":null}]}"), SealError::UnassignedCodePoint('\u{FFFF}'));
+        // seal() checks a stale payload_hash before dropping it, as in JS.
+        assert_eq!(seal_err("{\"payload_hash\":\"\u{FFFF}\"}"), SealError::UnassignedCodePoint('\u{FFFF}'));
+    }
+
+    #[test]
+    fn the_refusal_names_the_code_point_and_the_unicode_version() {
+        let message = SealError::UnassignedCodePoint('\u{378}').to_string();
+        let (major, minor, patch) = UNICODE_VERSION;
+        assert!(message.starts_with("the text contains U+0378, a character"), "{message}");
+        assert!(message.contains(&format!("Unicode version ({major}.{minor}.{patch})")), "{message}");
+        assert!(SealError::UnassignedCodePoint('\u{10FFFF}').to_string().contains("U+10FFFF,"));
     }
 
     #[test]
