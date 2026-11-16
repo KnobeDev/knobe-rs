@@ -171,7 +171,7 @@ Every malformed payload, whatever its shape, is reported as `unreadable` (exit 2
 
 ## Provenance
 
-knobe-rs is maintained by Joshua Hori (KnobeDev). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
+knobe-rs is maintained by Joshua Hori (KnobeDev), the KNOBE project's technical lead, and was built inside the project. It does not count toward the two-independent-implementations trigger in the protocol's [GOVERNANCE.md](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md#transition-to-shared-governance). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
 
 It was written with AI assistance (Claude) at the maintainer's direction. As the steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) ask, the reliance on the reference engines is disclosed:
 - **It was first built as a port of `lens.py` and `knobe-core.js`.**
